@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/
+*.spec
+data/
+.venv/
+venv/
+
+# 运行时产物：含服务器地址与账号信息，绝不提交
+config.json
+*.log
+tmp/

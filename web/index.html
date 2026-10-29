@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>EVE Desktop</title>
+<link rel="stylesheet" href="/vendor/xterm.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo"></span>
+    <span>EVE Desktop</span>
+  </div>
+  <nav class="tabs" id="nav">
+    <button data-view="topo" class="on">拓扑</button>
+    <button data-view="images">镜像库</button>
+    <button data-view="net">网络</button>
+    <button data-view="settings">设置</button>
+  </nav>
+  <div class="conn" id="conn">
+    <span class="dot off" id="connDot"></span>
+    <span id="connText">未连接</span>
+  </div>
+</header>
+
+<main id="main">
+  <!-- 拓扑视图 -->
+  <section class="view on" id="view-topo">
+    <aside class="sidebar">
+      <div class="side-head">
+        <span>实验</span>
+        <button class="mini" id="btnRefreshLabs" title="刷新">刷新</button>
+      </div>
+      <div class="crumbs" id="crumbs"></div>
+      <div class="labs" id="labTree"><div class="empty">未连接</div></div>
+    </aside>
+
+    <div class="center">
+      <div class="lab-bar">
+        <div class="lab-title" id="labTitle">未选择实验</div>
+        <div class="lab-actions">
+          <button class="btn sm" id="btnStartAll" title="启动全部节点">全部启动</button>
+          <button class="btn sm" id="btnStopAll" title="停止全部节点">全部停止</button>
+          <button class="btn sm ghost" id="btnFit" title="适应窗口">适应</button>
+          <button class="btn sm ghost" id="btnReload" title="重新加载拓扑">重载</button>
+        </div>
+      </div>
+      <div class="stage" id="stage">
+        <div class="world" id="world">
+          <svg class="links" id="links"></svg>
+          <div class="nodes" id="nodes"></div>
+        </div>
+        <div class="stage-hint" id="stageHint">从左侧选择实验</div>
+        <div class="zoom" id="zoomLabel">100%</div>
+      </div>
+    </div>
+
+    <aside class="inspector" id="inspector">
+      <div class="side-head"><span>节点</span>
+        <button class="mini" id="btnCloseInspector">×</button>
+      </div>
+      <div class="insp-body" id="inspBody"><div class="empty">选中一个节点</div></div>
+    </aside>
+  </section>
+
+  <!-- 镜像库 -->
+  <section class="view" id="view-images">
+    <div class="page">
+      <div class="page-head">
+        <h1>镜像库</h1>
+        <div class="row">
+          <input type="file" id="fileInput" hidden accept=".tgz,.tar,.gz,.zip">
+          <button class="btn" id="btnImport">导入镜像…</button>
+          <button class="btn ghost" id="btnIol">IOL 许可证检查</button>
+          <button class="btn ghost" id="btnScan">刷新</button>
+        </div>
+      </div>
+      <div class="iol-banner" id="iolBanner"></div>
+      <div class="table-wrap">
+        <table class="tbl" id="imgTable">
+          <thead><tr><th>名称</th><th>类型</th><th>大小</th><th>模板</th><th>操作</th></tr></thead>
+          <tbody><tr><td colspan="5" class="empty">未连接</td></tr></tbody>
+        </table>
+      </div>
+      <div class="tasks" id="tasks"></div>
+    </div>
+  </section>
+
+  <!-- 网络 -->
+  <section class="view" id="view-net">
+    <div class="page">
+      <div class="page-head">
+        <h1>宿主机网络</h1>
+        <div class="row">
+          <button class="btn ghost" id="btnNetRefresh">刷新</button>
+        </div>
+      </div>
+      <p class="hint">
+        <b>pnet0</b> 是 EVE 管理网，本工具永不修改。需要让实验里的设备上外网时，
+        有三种做法：① 拓扑里新建 <code>Cloud0</code>（型 pnet0）直连局域网；
+        ② 用下面的 NAT 出口新建一条独立云，节点走 NAT 出去；③ 给 pnetN 绑物理网卡（需多网卡）。
+      </p>
+      <div class="pnet-grid" id="pnetGrid"></div>
+
+      <h2>NAT 出口</h2>
+      <p class="hint">在不改动 <code>/etc/network/interfaces</code> 的前提下，新建 <code>pnetN</code> 网桥 +
+        dnsmasq + MASQUERADE，实验节点接上这条云即可访问外网。可一键卸载。</p>
+      <div class="form-row">
+        <label>云编号 <select id="natPnet"></select></label>
+        <label>出口网卡 <select id="natUp"></select></label>
+        <label class="chk"><input type="checkbox" id="natPersist" checked> 开机自动生效</label>
+        <button class="btn" id="btnNatApply">创建 / 更新</button>
+        <button class="btn ghost" id="btnNatRemove">卸载</button>
+      </div>
+      <pre class="out" id="natOut"></pre>
+    </div>
+  </section>
+
+  <!-- 设置 -->
+  <section class="view" id="view-settings">
+    <div class="page narrow">
+      <div class="page-head"><h1>连接设置</h1></div>
+      <form class="form" id="profForm">
+        <label>名称 <input name="name" placeholder="实验室 EVE"></label>
+        <div class="grid2">
+          <label>服务器地址 <input name="host" placeholder="192.168.1.10" required></label>
+          <label>API 端口 <input name="api_port" type="number" value="80"></label>
+        </div>
+        <div class="grid2">
+          <label>EVE 账号 <input name="eve_user" value="admin" autocomplete="username"></label>
+          <label>EVE 密码 <input name="eve_pass" type="password" autocomplete="current-password" placeholder="留空表示不修改"></label>
+        </div>
+        <label class="chk"><input type="checkbox" name="use_ssh" checked> 同时建立 SSH 连接（镜像导入导出、主机终端、网络配置需要）</label>
+        <div class="grid2">
+          <label>SSH 用户 <input name="ssh_user" value="root"></label>
+          <label>SSH 端口 <input name="ssh_port" type="number" value="22"></label>
+        </div>
+        <label>SSH 密码 <input name="ssh_pass" type="password" placeholder="留空表示不修改"></label>
+        <div class="row">
+          <button class="btn" type="submit">保存并连接</button>
+          <select id="profList"></select>
+        </div>
+      </form>
+      <div class="logs" id="logs"></div>
+    </div>
+  </section>
+</main>
+
+<!-- 终端 -->
+<section class="dock" id="dock">
+  <div class="dock-bar">
+    <span class="dock-title">终端</span>
+    <div class="dtabs" id="dtabs"></div>
+    <div class="row">
+      <span class="dock-hint">选中即复制 · 右键粘贴</span>
+      <button class="mini" id="btnHostShell" title="打开 EVE 主机 Shell">主机 Shell</button>
+      <button class="mini" id="btnDockHide">收起</button>
+    </div>
+  </div>
+  <div class="dock-body" id="dockBody"></div>
+</section>
+<div class="dock-toggle" id="dockToggle">终端</div>
+
+<div class="ctxmenu" id="ctxmenu"></div>
+<div class="toast" id="toast"></div>
+
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
