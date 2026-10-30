@@ -14,7 +14,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import clip, images, netcfg
+from . import capture, clip, images, netcfg
 from .config import Config
 from .eve import EveError, EveSession
 from .remote import Remote, RemoteError
@@ -41,7 +41,9 @@ class App:
         self.info = {}
         self.terms = TermManager()
         self.tasks = TaskManager()
+        self.caps = capture.Manager()
         self.logs = []
+        self.debug = False          # --debug：把每个本地接口调用打到控制台，方便排错
         self._lock = threading.RLock()
 
     # ---------- 日志 ----------
@@ -89,6 +91,10 @@ class App:
 
     def disconnect(self):
         self.terms.close_all()
+        try:
+            self.caps.stop_all()          # 别把 tcpdump 留在服务器上跑
+        except Exception:
+            pass
         if self.remote:
             self.remote.close()
         self.remote = None
@@ -128,7 +134,8 @@ class App:
         links = eve.lab_topology(path) or []
         run = sum(1 for n in nodes.values() if _status(n) >= 2)
         return {"meta": meta, "nodes": nodes, "networks": nets, "links": links,
-                "path": path, "running": run, "total": len(nodes)}
+                "path": path, "running": run, "total": len(nodes),
+                "umtime": eve.lab_umtime(path)}
 
     def node_detail(self, path, nid):
         eve = self.require()
@@ -155,6 +162,96 @@ class App:
             url = eve.base() + url
         return {"node": node, "options": opts, "interfaces": ifaces, "html5": url,
                 "console_port": eve.console_port(nid)}
+
+    # ---------- 拓扑编辑 ----------
+    def _guard(self, path, umtime):
+        """并发保护：写之前看一眼实验有没有被别人改过。
+
+        EVE 网页版和本工具同时开同一个实验时，后写的会盖掉先写的。
+        前端把加载时的 umtime 一起带上来，对不上就让用户先「重载」。
+        """
+        if umtime in (None, "", 0, "0"):
+            return
+        cur = self.eve.lab_umtime(path)
+        if cur and str(cur) != str(umtime):
+            raise EveError("实验已被别处修改（EVE 网页版或另一个窗口？），请先点「重载」再操作")
+
+    def templates(self):
+        """可新建的模板。描述带 `.missing` 表示宿主没装对应镜像，标成不可用。"""
+        eve = self.require()
+        raw = eve.templates() or {}
+        items = []
+        for name, desc in raw.items():
+            desc = desc or ""
+            missing = desc.endswith(".missing")
+            items.append({"template": name,
+                          "desc": (desc[:-8] if missing else desc).strip(" ."),
+                          "ready": not missing})
+        items.sort(key=lambda x: (not x["ready"], x["template"]))
+        return {"items": items, "total": len(items),
+                "ready": sum(1 for x in items if x["ready"])}
+
+    def add_node(self, path, props, umtime=None):
+        self.require()
+        self._guard(path, umtime)
+        data = self.eve.add_node(path, props)
+        nid = (data or {}).get("id") if isinstance(data, dict) else data
+        self.log("新建节点 %s（id=%s）" % (props.get("name") or props.get("template"), nid))
+        return {"id": nid, "umtime": self.eve.lab_umtime(path)}
+
+    def delete_node(self, path, nid, umtime=None):
+        self.require()
+        self._guard(path, umtime)
+        self.eve.delete_node(path, nid)
+        self.log("删除节点 %s" % nid)
+        return {"ok": True, "umtime": self.eve.lab_umtime(path)}
+
+    def delete_network(self, path, nid, umtime=None):
+        self.require()
+        self._guard(path, umtime)
+        self.eve.delete_network(path, nid)
+        self.log("删除网络 %s" % nid)
+        return {"ok": True, "umtime": self.eve.lab_umtime(path)}
+
+    def move_node(self, path, nid, left, top, umtime=None):
+        self.require()
+        self._guard(path, umtime)
+        self.eve.move_node(path, nid, left, top)
+        return {"ok": True, "umtime": self.eve.lab_umtime(path)}
+
+    # ---------- 抓包 ----------
+    def _iface_of(self, path, nid, iface=None, ifid=None):
+        """网卡名 → EVE 的接口编号（e0/0=0、e0/1=16…），也是 tap 名最后一截。"""
+        data = self.eve.node_interfaces(path, nid) or {}
+        eth = data.get("ethernet") or {}
+        if ifid not in (None, ""):
+            v = eth.get(str(ifid))
+            if v is None:
+                raise EveError("节点 %s 没有编号 %s 的网卡" % (nid, ifid))
+            return int(ifid), (v or {}).get("name") or ("if%s" % ifid)
+        for iid, v in eth.items():
+            if str((v or {}).get("name")) == str(iface):
+                return int(iid), iface
+        names = ", ".join(str((v or {}).get("name")) for v in eth.values()) or "无"
+        raise EveError("节点 %s 没有网卡 %s（可选：%s）" % (nid, iface, names))
+
+    def capture_start(self, path, nid, iface=None, ifid=None, snaplen=0, bpf=""):
+        eve = self.require(ssh=True)
+        node = eve.node(path, nid) or {}
+        name = node.get("name") or ("node-%s" % nid)
+        if _status(node) < 2:
+            raise EveError("节点 %s 还没运行，网卡上抓不到东西：先启动再抓包" % name)
+        iid, nm = self._iface_of(path, nid, iface, ifid)
+        tenant = (self.info.get("caps") or {}).get("tenant") or 0
+        info = self.caps.start(self.remote, tenant, path, nid, name, iid, nm,
+                               snaplen=snaplen, bpf=bpf)
+        self.log("开始抓包 %s %s（%s）" % (name, nm, info["ifname"]))
+        return info
+
+    def capture_dir(self):
+        return (self.cfg.ui().get("capture_dir")
+                or os.path.join(os.path.expanduser("~"), "Documents", "eve-captures"))
+
 
     # ---------- 终端 ----------
     def _tpl_arch(self):
@@ -255,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
         path, q = u.path, self._query()
+        if self.app.debug and path.startswith("/api/"):
+            print("[api] GET  %s %s" % (path, json.dumps(q, ensure_ascii=False)[:160]), flush=True)
         try:
             if path.startswith("/api/"):
                 return self._api_get(path, q)
@@ -268,6 +367,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
         q = self._query()
+        if self.app.debug and path != "/api/upload":
+            print("[api] POST %s" % path, flush=True)
         try:
             if path == "/api/upload":
                 return self._upload(q)
@@ -296,7 +397,15 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/profile":
                 self.app.cfg.delete_profile(q.get("id"))
                 return self._json({"ok": True})
+            if path == "/api/lab/node":
+                return self._json({"ok": True, **self.app.delete_node(
+                    q.get("path"), q.get("id"), q.get("umtime"))})
+            if path == "/api/lab/network":
+                return self._json({"ok": True, **self.app.delete_network(
+                    q.get("path"), q.get("id"), q.get("umtime"))})
             return self._err("未知接口", 404)
+        except (EveError, RemoteError, ValueError) as e:
+            return self._err(getattr(e, "message", str(e)), 400)
         except Exception as e:
             return self._err(str(e), 500)
 
@@ -316,6 +425,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, **a.node_detail(q.get("path"), q.get("id"))})
         if path == "/api/template":
             return self._json({"ok": True, "data": a.require().template_options(q.get("name"))})
+        if path == "/api/templates":
+            return self._json({"ok": True, **a.templates()})
+        if path == "/api/captures":
+            return self._json({"ok": True, "items": a.caps.list(), "dir": a.capture_dir()})
         if path == "/api/term/stream":
             return self._term_stream(q)
         if path == "/api/term/list":
@@ -360,6 +473,31 @@ class Handler(BaseHTTPRequestHandler):
                               _req(body, "id", "节点 id"),
                               _req(body, "action", "动作"))
             return self._json({"ok": True})
+        # ---------- 拓扑编辑 ----------
+        if path == "/api/lab/node":
+            return self._json({"ok": True, **a.add_node(
+                _req(body, "path", "实验路径"),
+                body.get("props") or body.get("node") or {},
+                body.get("umtime"))})
+        if path == "/api/node/move":
+            return self._json({"ok": True, **a.move_node(
+                _req(body, "path", "实验路径"), _req(body, "id", "节点 id"),
+                body.get("left"), body.get("top"), body.get("umtime"))})
+        # ---------- 抓包 ----------
+        if path == "/api/capture/start":
+            return self._json({"ok": True, **a.capture_start(
+                _req(body, "path", "实验路径"), _req(body, "id", "节点 id"),
+                body.get("iface"), body.get("ifid"),
+                int(body.get("snaplen") or 0), body.get("bpf") or "")})
+        if path == "/api/capture/stop":
+            return self._json({"ok": True, **a.caps.stop(_req(body, "sid", "抓包会话"))})
+        if path == "/api/capture/save":
+            return self._json({"ok": True, **a.caps.save(
+                _req(body, "sid", "抓包会话"), a.capture_dir())})
+        if path == "/api/capture/discard":
+            return self._json({"ok": True, **a.caps.discard(_req(body, "sid", "抓包会话"))})
+        if path == "/api/capture/open":
+            return self._json({"ok": True, **capture.open_local(body.get("file") or "")})
         if path == "/api/lab/action":
             a.require()
             action = _req(body, "action", "动作")
@@ -463,14 +601,18 @@ class Handler(BaseHTTPRequestHandler):
         a = self.app
         if path == "/api/node":
             a.require()
-            a.eve.edit_node(_req(body, "path", "实验路径"), _req(body, "id", "节点 id"),
+            path_ = _req(body, "path", "实验路径")
+            a._guard(path_, body.get("umtime"))
+            a.eve.edit_node(path_, _req(body, "id", "节点 id"),
                             body.get("props") or {})
-            return self._json({"ok": True})
+            return self._json({"ok": True, "umtime": a.eve.lab_umtime(path_)})
         if path == "/api/node/ifaces":
             a.require()
-            a.eve.set_interfaces(_req(body, "path", "实验路径"), _req(body, "id", "节点 id"),
-                                  body.get("ifaces") or [])
-            return self._json({"ok": True})
+            p_ = _req(body, "path", "实验路径")
+            a._guard(p_, body.get("umtime"))
+            a.eve.set_interfaces(p_, _req(body, "id", "节点 id"),
+                                 body.get("ifaces") or [])
+            return self._json({"ok": True, "umtime": a.eve.lab_umtime(p_)})
         if path == "/api/lab/network":
             a.require()
             a.eve.add_network(_req(body, "path", "实验路径"), body.get("net") or {})

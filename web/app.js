@@ -16,6 +16,11 @@ const S = {
   z: 1, tx: 0, ty: 0,
   poll: null,
   icons: {},
+  umtime: null,        // 实验文件时间戳：写操作前比对，防止盖掉别处的修改
+  tpl: [],             // 模板库
+  caps: [],            // 正在抓的会话
+  capTimer: null,
+  lastPcap: '',
 };
 
 /* ------------------------------------------------------------------ 工具 */
@@ -135,8 +140,15 @@ async function connect(payload) {
 
 async function boot() {
   try {
-    const st = await api('/api/state');
+    let st = await api('/api/state');
     S.info = st.info && st.info.host ? st.info : null;
+    // 启动时的「自动连接」在后台线程里跑，页面往往比它先就绪 —— 等一会儿，
+    // 否则用户看到的是「未连接」然后一直不动（旧版本就卡在这儿）。
+    for (let i = 0; !S.info && i < 20; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      st = await api('/api/state');
+      S.info = st.info && st.info.host ? st.info : null;
+    }
     S.profiles = st.profiles || [];
     renderConn();
     renderProfiles(st.active);
@@ -209,6 +221,7 @@ async function openLab(path) {
   try { history.replaceState(null, '', '#lab=' + encodeURIComponent(path)); } catch (e) {}
   const d = await api('/api/lab?path=' + encodeURIComponent(path));
   S.lab = d;
+  S.umtime = d.umtime;
   $('#labTitle').textContent = (d.meta && (d.meta.name || path)) + `　${d.total} 节点 · 运行 ${d.running}`;
   $('#stageHint').style.display = 'none';
   renderInspector(null);
@@ -286,6 +299,24 @@ function renderTopology() {
     nodesEl.appendChild(el);
   });
 
+  drawLinks();
+  applyT();
+  fit();
+}
+
+/* 连线单独一层：拖动节点时只重画线，不重算缩放（否则视角会跳） */
+function drawLinks() {
+  const L = S.lab;
+  const linksEl = $('#links');
+  if (!L || !linksEl) return;
+  linksEl.innerHTML = '';
+  const pts = {};
+  Object.entries(L.nodes || {}).forEach(([id, n]) => {
+    pts['node' + id] = { x: Number(n.left || 0), y: Number(n.top || 0) };
+  });
+  Object.entries(L.networks || {}).forEach(([id, n]) => {
+    pts['network' + id] = { x: Number(n.left || 0), y: Number(n.top || 0) };
+  });
   const svgNS = 'http://www.w3.org/2000/svg';
   const w = Math.max(3200, ...Object.values(pts).map(p => p.x + 400));
   const h = Math.max(2200, ...Object.values(pts).map(p => p.y + 400));
@@ -303,9 +334,6 @@ function renderTopology() {
     line.setAttribute('stroke-width', '2');
     linksEl.appendChild(line);
   });
-
-  applyT();
-  fit();
 }
 
 function applyT() {
@@ -350,7 +378,9 @@ function renderInspector(d) {
     const opts = ['<option value="0">未连接</option>'].concat(nets.map(x =>
       `<option value="${x.id}"${String(it.network_id) === String(x.id) ? ' selected' : ''}>${esc(x.name)} (${esc(x.type)})</option>`)).join('');
     return `<div class="iface-row"><span class="nm">${esc(it.name)}</span>
-      <select data-if="${esc(it.name)}">${opts}</select></div>`;
+      <select data-if="${esc(it.name)}">${opts}</select>
+      <button class="mini cap-btn" data-cap="${esc(it.name)}"
+        title="在 ${esc(it.name)} 上抓包（走 tcpdump，抓完给 Wireshark）">抓包</button></div>`;
   }).join('');
 
   box.innerHTML = `
@@ -366,6 +396,8 @@ function renderInspector(d) {
       <button class="btn sm ghost" data-act="wipe">擦除</button>
       <button class="btn sm" data-act="term">CLI 控制台</button>
       ${d.html5 ? '<button class="btn sm ghost" data-act="html5">图形控制台</button>' : ''}
+      <button class="btn sm ghost" data-act="rename">改名</button>
+      <button class="btn sm ghost" data-act="del">删除节点</button>
     </div>
     <div class="sub-title">网卡</div>
     ${rows || '<div class="empty">无以太网卡</div>'}
@@ -373,6 +405,11 @@ function renderInspector(d) {
       <button class="btn sm ghost" data-act="newcloud">新建云</button></div>`;
 
   box.onclick = async ev => {
+    const capBtn = ev.target.closest('[data-cap]');
+    if (capBtn) {
+      await startCapture(n.id, capBtn.dataset.cap);
+      return;
+    }
     const b = ev.target.closest('[data-act]');
     if (!b) return;
     const act = b.dataset.act;
@@ -386,9 +423,15 @@ function renderInspector(d) {
         openNodeTerm(n.id, n.name);
       } else if (act === 'html5') {
         openHtml5(d.html5, n.name);
+      } else if (act === 'rename') {
+        await renameNode(n.id, n.name);
+      } else if (act === 'del') {
+        await deleteNodeById(n.id, n.name);
       } else if (act === 'savif') {
         const arr = $$('select[data-if]').map(s => ({ name: s.dataset.if, network_id: Number(s.value) }));
-        await api('/api/node/ifaces', { method: 'PUT', body: { path: S.labPath, id: n.id, ifaces: arr } });
+        const r = await api('/api/node/ifaces', { method: 'PUT', body: guarded({
+          path: S.labPath, id: n.id, ifaces: arr }) });
+        afterWrite(r);
         toast('网卡接线已保存', 'ok');
         setTimeout(() => openLab(S.labPath), 600);
       } else if (act === 'newcloud') {
@@ -417,6 +460,182 @@ async function createCloud() {
            visibility: 1, icon: f.type === 'bridge' ? 'lan.png' : 'cloud.png' } } });
   toast('已新建网络', 'ok');
   await openLab(S.labPath);
+}
+
+/* ------------------------------------------- 二期：拓扑编辑（新增 / 移动 / 删除） */
+function guarded(body) {
+  // 写操作统一带上 umtime，让后端挡掉「别处已经改过这个实验」的情况
+  return Object.assign({ umtime: S.umtime }, body);
+}
+function afterWrite(r) { if (r && r.umtime) S.umtime = r.umtime; }
+
+async function addNodeAt(tpl, x, y) {
+  if (!S.labPath) { toast('先打开一个实验', 'warn'); return; }
+  try {
+    const r = await api('/api/lab/node', { method: 'POST', body: guarded({
+      path: S.labPath,
+      props: { template: tpl, left: Math.round(x), top: Math.round(y) },
+    }) });
+    afterWrite(r);
+    toast('已添加节点 ' + (r.id != null ? '#' + r.id : ''), 'ok');
+    await openLab(S.labPath);
+    if (r.id != null) selectNode(String(r.id)).catch(() => {});
+  } catch (e) { fail(e); }
+}
+
+async function renameNode(id, cur) {
+  const name = prompt('节点名称', cur || '');
+  if (name == null || !name.trim()) return;
+  try {
+    const r = await api('/api/node', { method: 'PUT', body: guarded({
+      path: S.labPath, id, props: { name: name.trim() } }) });
+    afterWrite(r);
+    toast('已改名', 'ok');
+    await openLab(S.labPath);
+  } catch (e) { fail(e); }
+}
+
+async function deleteNodeById(id, name) {
+  if (!confirm(`删除节点 ${name || id}？\n连带它的配置目录一起删，不可恢复。`)) return;
+  try {
+    const r = await api('/api/lab/node?path=' + encodeURIComponent(S.labPath)
+      + '&id=' + encodeURIComponent(id) + '&umtime=' + encodeURIComponent(S.umtime),
+      { method: 'DELETE' });
+    afterWrite(r);
+    toast('已删除节点', 'ok');
+    await openLab(S.labPath);
+  } catch (e) { fail(e); }
+}
+
+async function deleteNetById(id, name) {
+  if (!confirm(`删除网络 ${name || id}？接在上面的网卡会自动断开。`)) return;
+  try {
+    const r = await api('/api/lab/network?path=' + encodeURIComponent(S.labPath)
+      + '&id=' + encodeURIComponent(id) + '&umtime=' + encodeURIComponent(S.umtime),
+      { method: 'DELETE' });
+    afterWrite(r);
+    toast('已删除网络', 'ok');
+    await openLab(S.labPath);
+  } catch (e) { fail(e); }
+}
+
+/* ------------------------------------------------------------ 模板库面板 */
+async function loadTemplates(force) {
+  if (S.tpl.length && !force) return S.tpl;
+  const d = await api('/api/templates');
+  S.tpl = d.items || [];
+  S.tplReady = d.ready || 0;
+  return S.tpl;
+}
+
+async function togglePalette(on) {
+  const el = $('#palette');
+  const open = on == null ? !el.classList.contains('on') : on;
+  el.classList.toggle('on', open);
+  if (!open) return;
+  $('#palList').innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    await loadTemplates();
+    $('#palHint').textContent = `拖到画布放置，或单击直接添加（${S.tpl.length} 个模板，`
+      + `${S.tplReady} 个已装镜像）`;
+    renderPalette($('#palSearch').value);
+  } catch (e) {
+    $('#palList').innerHTML = '<div class="empty">加载失败</div>';
+    fail(e);
+  }
+}
+
+function renderPalette(filter) {
+  const q = (filter || '').trim().toLowerCase();
+  const list = S.tpl.filter(t => !q
+    || t.template.toLowerCase().includes(q) || (t.desc || '').toLowerCase().includes(q));
+  $('#palList').innerHTML = list.slice(0, 400).map(t => `
+    <div class="pal-item${t.ready ? '' : ' off'}" draggable="${t.ready ? 'true' : 'false'}"
+         data-tpl="${esc(t.template)}" data-ready="${t.ready ? 1 : 0}"
+         title="${esc(t.ready ? t.desc : '宿主没装这个模板对应的镜像')}">
+      <span class="pal-name">${esc(t.desc || t.template)}</span>
+      <span class="pal-id">${esc(t.template)}</span>
+    </div>`).join('') || '<div class="empty">没有匹配的模板</div>';
+}
+
+/* -------------------------------------------------------------- 抓包面板 */
+async function toggleCapPanel(on) {
+  const el = $('#capPanel');
+  const open = on == null ? !el.classList.contains('on') : on;
+  el.classList.toggle('on', open);
+  clearInterval(S.capTimer);
+  S.capTimer = null;
+  if (!open) return;
+  await refreshCaps().catch(fail);
+  S.capTimer = setInterval(() => { if (!document.hidden) refreshCaps().catch(() => {}); }, 2000);
+}
+
+async function refreshCaps() {
+  const d = await api('/api/captures');
+  S.caps = d.items || [];
+  S.capDir = d.dir || '';
+  renderCaps();
+}
+
+function renderCaps() {
+  const box = $('#capList');
+  const items = S.caps || [];
+  if (!items.length) {
+    box.innerHTML = '<div class="empty">还没有在抓的会话<br><span style="opacity:.6">'
+      + '右键节点或检查器里的「抓包」开始</span></div>';
+    return;
+  }
+  box.innerHTML = items.map(c => `
+    <div class="cap-item" data-sid="${esc(c.sid)}">
+      <div class="cap-top"><b>${esc(c.node)}</b> · ${esc(c.iface)}
+        <span class="cap-tag">${esc(c.ifname)}</span></div>
+      <div class="cap-meta">${bytes(c.bytes)} · ${c.elapsed}s${c.bpf ? ' · ' + esc(c.bpf) : ''}</div>
+      <div class="cap-btns">
+        <button class="btn sm" data-cap-act="save">停止并保存</button>
+        <button class="btn sm ghost" data-cap-act="discard">丢弃</button>
+      </div>
+    </div>`).join('');
+  if (S.lastPcap) {
+    box.insertAdjacentHTML('beforeend',
+      `<div class="cap-saved">上次保存：${esc(S.lastPcap.split(/[\\/]/).pop())}
+        <button class="mini" id="capOpenLast">用 Wireshark 打开</button></div>`);
+  }
+}
+
+async function startCapture(nodeId, iface) {
+  if (!S.labPath) { toast('先打开一个实验', 'warn'); return; }
+  try {
+    const r = await api('/api/capture/start', { method: 'POST', body: {
+      path: S.labPath, id: nodeId, iface } });
+    toast('开始抓包 ' + r.ifname, 'ok');
+    await toggleCapPanel(true);
+  } catch (e) { fail(e); }
+}
+
+async function saveCap(sid) {
+  try {
+    toast('正在停止并回传…');
+    const r = await api('/api/capture/save', { method: 'POST', body: { sid } });
+    S.lastPcap = r.file;
+    toast(`已保存 ${r.packets} 个包（${bytes(r.bytes)}）`, 'ok');
+    await refreshCaps();
+    await openPcap(r.file);
+  } catch (e) { fail(e); refreshCaps().catch(() => {}); }
+}
+
+async function discardCap(sid) {
+  try {
+    await api('/api/capture/discard', { method: 'POST', body: { sid } });
+    toast('已丢弃', 'ok');
+    await refreshCaps();
+  } catch (e) { fail(e); }
+}
+
+async function openPcap(file) {
+  try {
+    const r = await api('/api/capture/open', { method: 'POST', body: { file } });
+    if (!r.opened) toast(r.hint || '打不开这个文件', 'warn');
+  } catch (e) { fail(e); }
 }
 
 /* ------------------------------------------------------------------ 终端 */
@@ -839,6 +1058,34 @@ function bind() {
 
   $('#btnFit').onclick = fit;
   $('#btnReload').onclick = () => S.labPath && openLab(S.labPath).catch(fail);
+  $('#btnAddNode').onclick = () => togglePalette();
+  $('#btnCapture').onclick = () => toggleCapPanel();
+  $('#palClose').onclick = () => togglePalette(false);
+  $('#capClose').onclick = () => toggleCapPanel(false);
+  $('#palSearch').oninput = e => renderPalette(e.target.value);
+  $('#palList').onclick = e => {
+    const it = e.target.closest('.pal-item');
+    if (!it) return;
+    if (it.dataset.ready !== '1') { toast('宿主没装这个模板的镜像，先导入镜像', 'warn'); return; }
+    const box = $('#stage').getBoundingClientRect();
+    const x = (box.width / 2 - S.tx) / S.z - 60, y = (box.height / 2 - S.ty) / S.z - 30;
+    addNodeAt(it.dataset.tpl, x, y);
+  };
+  $('#palList').addEventListener('dragstart', e => {
+    const it = e.target.closest('.pal-item');
+    if (!it || it.dataset.ready !== '1') { e.preventDefault(); return; }
+    e.dataTransfer.setData('text/eve-template', it.dataset.tpl);
+    e.dataTransfer.effectAllowed = 'copy';
+  });
+  $('#capList').onclick = e => {
+    const openLast = e.target.closest('#capOpenLast');
+    if (openLast && S.lastPcap) { openPcap(S.lastPcap); return; }
+    const b = e.target.closest('[data-cap-act]');
+    if (!b) return;
+    const sid = b.closest('.cap-item').dataset.sid;
+    if (b.dataset.capAct === 'save') saveCap(sid);
+    else discardCap(sid);
+  };
   $('#btnStartAll').onclick = async () => {
     if (!S.labPath) return;
     try {
@@ -861,21 +1108,74 @@ function bind() {
   $('#btnCloseInspector').onclick = () => { S.sel = null; renderInspector(null);
     $$('.nd').forEach(el => el.classList.remove('sel')); };
 
-  // 画布交互
+  // 画布交互：空白处拖 = 平移；节点上拖 = 改坐标
   const stage = $('#stage');
-  let drag = null;
+  let drag = null, ndrag = null;
   stage.addEventListener('mousedown', e => {
     if (e.target.closest('.nd') || e.target.closest('.net') || e.button !== 0) return;
     drag = { x: e.clientX, y: e.clientY, tx: S.tx, ty: S.ty };
     stage.classList.add('dragging');
   });
+  $('#nodes').addEventListener('mousedown', e => {
+    const el = e.target.closest('.nd');
+    if (!el || e.button !== 0 || !S.lab) return;
+    const n = S.lab.nodes[el.dataset.id];
+    if (!n) return;
+    ndrag = { el, id: el.dataset.id, x: e.clientX, y: e.clientY,
+      left: Number(n.left || 0), top: Number(n.top || 0), moved: false };
+    el.classList.add('dragging');
+    e.preventDefault();          // 别把拖动变成选文字
+  });
   window.addEventListener('mousemove', e => {
+    if (ndrag) {
+      const dx = (e.clientX - ndrag.x) / S.z, dy = (e.clientY - ndrag.y) / S.z;
+      if (!ndrag.moved && Math.abs(dx) + Math.abs(dy) < 2) return;
+      ndrag.moved = true;
+      const nx = Math.round(ndrag.left + dx), ny = Math.round(ndrag.top + dy);
+      ndrag.el.style.left = nx + 'px';
+      ndrag.el.style.top = ny + 'px';
+      const n = S.lab.nodes[ndrag.id];
+      if (n) { n.left = nx; n.top = ny; }
+      drawLinks();
+      return;
+    }
     if (!drag) return;
     S.tx = drag.tx + (e.clientX - drag.x);
     S.ty = drag.ty + (e.clientY - drag.y);
     applyT();
   });
-  window.addEventListener('mouseup', () => { drag = null; stage.classList.remove('dragging'); });
+  window.addEventListener('mouseup', () => {
+    drag = null;
+    stage.classList.remove('dragging');
+    if (!ndrag) return;
+    const d = ndrag;
+    ndrag = null;
+    d.el.classList.remove('dragging');
+    if (!d.moved) return;
+    const n = S.lab && S.lab.nodes[d.id];
+    const left = Math.round(Number(n ? n.left : d.left));
+    const top = Math.round(Number(n ? n.top : d.top));
+    api('/api/node/move', { method: 'POST', body: guarded({
+      path: S.labPath, id: d.id, left, top }) })
+      .then(r => { afterWrite(r); })
+      .catch(err => { fail(err); openLab(S.labPath).catch(() => {}); });
+  });
+
+  // 从模板库拖到画布
+  stage.addEventListener('dragover', e => {
+    if (!S.labPath) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  stage.addEventListener('drop', e => {
+    const tpl = e.dataTransfer.getData('text/eve-template');
+    if (!tpl || !S.labPath) return;
+    e.preventDefault();
+    const box = stage.getBoundingClientRect();
+    const x = (e.clientX - box.left - S.tx) / S.z;
+    const y = (e.clientY - box.top - S.ty) / S.z;
+    addNodeAt(tpl, x - 40, y - 30);
+  });
   stage.addEventListener('wheel', e => {
     if (!S.lab) return;
     e.preventDefault();
@@ -901,16 +1201,43 @@ function bind() {
     }
   };
   $('#nodes').oncontextmenu = e => {
+    // 网络（云）右键
+    const netEl = e.target.closest('.net');
+    if (netEl && S.lab) {
+      e.preventDefault();
+      const net = S.lab.networks[netEl.dataset.netId] || {};
+      showCtx(e.clientX, e.clientY, [
+        ['删除网络', () => deleteNetById(netEl.dataset.netId, net.name)],
+      ]);
+      return;
+    }
     const nd = e.target.closest('.nd');
     if (!nd) return;
     e.preventDefault();
-    const n = S.lab.nodes[nd.dataset.id] || {};
+    const id = nd.dataset.id;
+    const n = S.lab.nodes[id] || {};
     const menu = [
-      ['打开 CLI 控制台', () => openNodeTerm(nd.dataset.id, n.name)],
-      ['启动', () => act(nd.dataset.id, 'start')],
-      ['停止', () => act(nd.dataset.id, 'stop')],
+      ['打开 CLI 控制台', () => openNodeTerm(id, n.name)],
+      ['启动', () => act(id, 'start')],
+      ['停止', () => act(id, 'stop')],
       null,
-      ['擦除配置', () => act(nd.dataset.id, 'wipe')],
+      ['抓包…', async () => {
+        try {
+          const d = await api(`/api/node?path=${encodeURIComponent(S.labPath)}&id=${id}`);
+          const ifs = Object.values((d.interfaces || {}).ethernet || {});
+          if (!ifs.length) { toast('这个节点没有以太网卡', 'warn'); return; }
+          if (!isRunning(n)) {
+            toast('节点没运行，先启动再抓包', 'warn');
+            return;
+          }
+          showCtx(e.clientX, e.clientY, ifs.map(it =>
+            ['抓包 ' + it.name, () => startCapture(id, it.name)]));
+        } catch (err) { fail(err); }
+      }],
+      ['改名', () => renameNode(id, n.name)],
+      null,
+      ['擦除配置', () => act(id, 'wipe')],
+      ['删除节点', () => deleteNodeById(id, n.name)],
     ];
     showCtx(e.clientX, e.clientY, menu);
   };
@@ -1027,4 +1354,13 @@ function showCtx(x, y, items) {
 /* ------------------------------------------------------------------ 启动 */
 bind();
 boot();
-setInterval(() => { if (S.info) api('/api/state').then(s => { S.info = s.info; renderConn(); }).catch(() => {}); }, 15000);
+setInterval(() => {
+  api('/api/state').then(s => {
+    const was = !!S.info;
+    S.info = s.info && s.info.host ? s.info : null;
+    renderConn();
+    // 后台自动连接终于连上了（或者刚被断开）——把实验列表补上
+    if (!was && S.info) loadLabs(S.cwd).catch(() => {});
+    if (was && !S.info) { $('#labTree').innerHTML = '<div class="empty">未连接</div>'; }
+  }).catch(() => {});
+}, 15000);

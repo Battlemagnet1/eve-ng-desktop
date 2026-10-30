@@ -41,6 +41,8 @@
       <div class="lab-bar">
         <div class="lab-title" id="labTitle">未选择实验</div>
         <div class="lab-actions">
+          <button class="btn sm ghost" id="btnAddNode" title="从模板库新建节点（也可直接拖到画布）">＋ 节点</button>
+          <button class="btn sm ghost" id="btnCapture" title="抓包并用 Wireshark 打开">抓包</button>
           <button class="btn sm" id="btnStartAll" title="启动全部节点">全部启动</button>
           <button class="btn sm" id="btnStopAll" title="停止全部节点">全部停止</button>
           <button class="btn sm ghost" id="btnFit" title="适应窗口">适应</button>
@@ -54,6 +56,29 @@
         </div>
         <div class="stage-hint" id="stageHint">从左侧选择实验</div>
         <div class="zoom" id="zoomLabel">100%</div>
+
+        <!-- 模板库（新建节点） -->
+        <aside class="palette" id="palette">
+          <div class="pal-head">
+            <span>模板库</span>
+            <input id="palSearch" placeholder="搜索…" autocomplete="off">
+            <button class="mini" id="palClose">×</button>
+          </div>
+          <div class="pal-hint" id="palHint">拖到画布放置，或单击直接添加</div>
+          <div class="pal-list" id="palList"><div class="empty">加载中…</div></div>
+        </aside>
+
+        <!-- 抓包面板 -->
+        <aside class="cappanel" id="capPanel">
+          <div class="pal-head">
+            <span>抓包</span>
+            <button class="mini" id="capClose">×</button>
+          </div>
+          <div class="cap-list" id="capList"><div class="empty">还没有在抓的会话</div></div>
+          <div class="cap-foot" id="capFoot">
+            抓到的是节点网卡上的原始流量；停止后会存到本机并用 Wireshark 打开。
+          </div>
+        </aside>
       </div>
     </div>
 

@@ -9,11 +9,34 @@ import argparse
 import os
 import sys
 import threading
+import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import server  # noqa: E402
 from core.config import Config, app_dir  # noqa: E402
+
+
+def _fit_size(w, h):
+    """把窗口限制在屏幕工作区内。
+
+    150% 缩放的笔记本上逻辑分辨率只有 1708x930，可用高度还被任务栏吃掉
+    （实测 882），默认 920 高的窗口下半截会跑到屏幕外面去 —— 抓包面板这类
+    贴底的元素就永远看不见。这里按工作区的 96% 收一下。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        u = ctypes.windll.user32
+        r = wintypes.RECT()
+        if u.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):   # SPI_GETWORKAREA
+            aw, ah = r.right - r.left, r.bottom - r.top
+            if aw > 600 and ah > 400:
+                return min(w, int(aw * 0.96)), min(h, int(ah * 0.96))
+    except Exception:
+        pass
+    return w, h
 
 
 def main():
@@ -22,13 +45,17 @@ def main():
     ap.add_argument("--port", type=int, default=0, help="本地服务端口（默认随机）")
     ap.add_argument("--debug", action="store_true", help="打开 WebView 调试")
     ap.add_argument("--no-auto-connect", action="store_true", help="启动时不自动连接上次的服务器")
+    ap.add_argument("--lab", default="", help="启动后直接打开某个实验，如 --lab 1.unl")
     args = ap.parse_args()
 
     cfg = Config()
     app = server.App(cfg)
+    app.debug = args.debug
     httpd = server.serve(app, "127.0.0.1", args.port)
     port = httpd.server_address[1]
     url = "http://127.0.0.1:%d/" % port
+    if args.lab:
+        url += "#lab=" + urllib.parse.quote(args.lab)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     print("[eve-desktop] %s" % url, flush=True)
 
@@ -67,10 +94,11 @@ def main():
             pass
         return
 
+    win_w, win_h = _fit_size(1480, 920)
     webview.create_window(
         # 标题只用 ASCII：中文环境里非 ASCII 会被按 GBK 解释成乱码（· → ¡¤）
         "EVE Desktop - %s" % (cfg.profile().get("host") or ""),
-        url, width=1480, height=920, min_size=(1080, 680),
+        url, width=win_w, height=win_h, min_size=(min(1080, win_w), min(680, win_h)),
         text_select=True, confirm_close=False,
     )
     try:

@@ -8,6 +8,7 @@
 """
 import http.cookiejar
 import json
+import posixpath
 import ssl
 import threading
 import time
@@ -356,6 +357,87 @@ class EveSession:
     def add_network(self, path, net):
         """新建一个网络（云）。EVE 需要 name/type/left/top 等字段。"""
         return self.post("/api/labs/%s/networks" % _q(path), net)
+
+    def delete_network(self, path, nid):
+        """删网络。EVE 会连带把接在上面的网卡断线。"""
+        return self.delete("/api/labs/%s/networks/%s" % (_q(path), nid))
+
+    def templates(self):
+        """模板清单：{模板名: 描述}。没装镜像的模板描述里带 `.missing`。"""
+        return self.get("/api/list/templates/") or {}
+
+    def template_defaults(self, name):
+        """模板的默认参数（把 EVE 的 options 摊平成 字段→默认值）。
+
+        options 的形状是 `{字段: {name, type, value, list?}}`，其中 `name`
+        是**节点名前缀**（如 IOL 的 "R"），不是节点名本身，所以单独摘出去。
+        """
+        t = self.template_options(name) or {}
+        out, prefix = {}, ""
+        for k, o in (t.get("options") or {}).items():
+            if not isinstance(o, dict):
+                continue
+            if k == "name":
+                prefix = o.get("value") or ""
+                continue
+            v = o.get("value")
+            if v not in (None, ""):
+                out[k] = v
+        return out, prefix
+
+    def add_node(self, path, props):
+        """新增节点。
+
+        EVE 的 `POST labs/{path}/nodes` 必须带 name/left/top/template/type，
+        少一个 `addNode()` 就返回错误码；模板的其它参数（image/ram/ethernet…）
+        它**不会**自己补，缺了要等启动时才炸。所以这里先用模板默认值打底。
+
+        名字取用户给的；用户留空时用模板前缀（EVE 自己会把节点 id 拼在后面，
+        例如前缀 R → R1、R2）。
+        """
+        body = dict(props or {})
+        tpl = (body.get("template") or body.get("type") or "").strip()
+        if not tpl:
+            raise EveError("新增节点缺少模板")
+        defaults, prefix = self.template_defaults(tpl)
+        merged = dict(defaults)
+        merged.update({k: v for k, v in body.items() if v not in (None, "")})
+        merged["template"] = tpl
+        merged["type"] = tpl                     # EVE 内部按 type 分派，两者一致
+        merged["name"] = (body.get("name") or "").strip() or prefix or "R"
+        merged["left"] = int(body.get("left") or 300)
+        merged["top"] = int(body.get("top") or 300)
+        data = self.post("/api/labs/%s/nodes" % _q(path), merged)
+        return data
+
+    def delete_node(self, path, nid):
+        """删节点。EVE 会先停掉节点、清 tmp 目录，再写回 .unl。"""
+        return self.delete("/api/labs/%s/nodes/%s" % (_q(path), nid))
+
+    def move_node(self, path, nid, left, top):
+        """只改坐标。EVE 的 editNode 是「给了才改」的语义，所以只发 id/left/top。"""
+        return self.put("/api/labs/%s/nodes/%s" % (_q(path), nid),
+                        {"id": int(nid), "left": int(left), "top": int(top)})
+
+    def lab_umtime(self, path):
+        """实验文件的修改时间。
+
+        `GET /api/labs/{path}` 的 meta 里**没有** umtime，只有目录列表
+        （`/api/folders/`）里每个实验项带 umtime。并发保护要靠它，所以
+        这里回目录里找一次。
+        """
+        p = (path or "").strip("/")
+        folder, name = posixpath.dirname(p), posixpath.basename(p)
+        try:
+            data = self.list_labs(folder) or {}
+        except EveError:
+            return None
+        for lab in data.get("labs") or []:
+            lp = (lab.get("path") or lab.get("file") or "").strip("/")
+            if posixpath.basename(lp) == name:
+                return lab.get("umtime")
+        return None
+
 
     def list_networks(self):
         return self.get("/api/list/networks") or {}
