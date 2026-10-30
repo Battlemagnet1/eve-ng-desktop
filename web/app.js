@@ -23,6 +23,8 @@ const S = {
   lastPcap: '',
   selIds: [],          // 选中的节点 id（支持多选，顺序即点选顺序）
   linking: null,       // Shift 拖线接线的临时状态
+  ifaces: {},          // {节点id: [{name, network_id, id}]}，给链路标注接口名用
+  showP2P: false,      // 是否把「只挂 2 个接口的直连桥」也画成图标（默认隐藏）
 };
 
 /* ------------------------------------------------------------------ 工具 */
@@ -221,6 +223,7 @@ async function openLab(path) {
   S.labPath = path;
   S.sel = null;
   S.selIds = [];
+  S.ifaces = {};           // 旧实验的接口信息不能留在新画布上
   try { history.replaceState(null, '', '#lab=' + encodeURIComponent(path)); } catch (e) {}
   const d = await api('/api/lab?path=' + encodeURIComponent(path));
   S.lab = d;
@@ -232,6 +235,25 @@ async function openLab(path) {
   paintSel();
   renderLabs();
   startPoll();
+  loadIfaces();
+}
+
+/* 把整个实验的网卡拉回来：只用来给「已接线的链路」标接口名 */
+async function loadIfaces() {
+  const p = S.labPath;
+  try {
+    const d = await api('/api/lab/ifaces?path=' + encodeURIComponent(p));
+    if (p !== S.labPath) return;            // 期间切了实验就别覆盖
+    S.ifaces = d.nodes || {};
+    drawLinks();                            // 有了接口信息才画得出标签
+  } catch (e) { /* 接口信息拿不到就只少了标签，不影响其它功能 */ }
+}
+
+/* 某节点接到某网络上的接口名 */
+function ifacesOnNet(nodeId, netId) {
+  const arr = (S.ifaces || {})[String(nodeId)] || [];
+  return arr.filter(it => it.network_id && String(it.network_id) === String(netId))
+            .map(it => it.name);
 }
 
 function startPoll() {
@@ -264,6 +286,46 @@ function endpointPos(kind, id) {
   return { x: Number(n.left || 0), y: Number(n.top || 0) };
 }
 
+/* 云/物理网卡这类网络永远当图标显示，不会被当成「直连」隐掉 */
+function isCloudNet(t) {
+  return /^pnet\d+$|^ovs$|^cloud/.test(t || '');
+}
+
+/* 哪些网络是「纯直连」：只挂 2 个接口、又不是云。
+   EVE 自己就是这么判的（api_topology.php：count==2 且非云且 visibility!=1
+   时输出 node→node 的边，不画网络图标），这里照抄，另外把 visibility=1 的
+   也算进来——否则界面上会出现「两个节点中间夹一个多余的 Net-N 图标」。*/
+function p2pNetIds() {
+  const out = new Set();
+  const L = S.lab;
+  if (!L) return out;
+  const cnt = {};
+  const add = nid => {
+    const k = String(nid || '0');
+    if (k && k !== '0') cnt[k] = (cnt[k] || 0) + 1;
+  };
+  const ifs = S.ifaces || {};
+  if (Object.keys(ifs).length) {
+    Object.values(ifs).forEach(list => (list || []).forEach(it => add(it.network_id)));
+  } else {
+    // 接口信息还没拉回来时，用拓扑里的 node→network 边反推（一条边就是一个接口）
+    (L.links || []).forEach(l => {
+      [[l.source, l.source_type], [l.destination, l.destination_type]]
+        .forEach(([v, t]) => {
+          const s = String(v == null ? '' : v);
+          if (String(t || '').toLowerCase() === 'network' || /^network/i.test(s)) {
+            add(s.replace(/\D/g, ''));
+          }
+        });
+    });
+  }
+  Object.entries(L.networks || {}).forEach(([id, n]) => {
+    if (isCloudNet(n.type)) return;
+    if (cnt[String(id)] === 2) out.add(String(id));
+  });
+  return out;
+}
+
 function renderTopology() {
   const L = S.lab;
   const nodesEl = $('#nodes'), linksEl = $('#links'), world = $('#world');
@@ -290,11 +352,12 @@ function renderTopology() {
     pts['network' + id] = { x: Number(n.left || 0), y: Number(n.top || 0), net: n, id };
   });
 
-  const isCloud = t => /^pnet\d+$|^ovs$|^cloud/.test(t || '');
+  const p2p = S.showP2P ? new Set() : p2pNetIds();
   Object.entries(L.networks || {}).forEach(([id, n]) => {
-    if (String(n.visibility) === '0' && !isCloud(n.type)) return;
+    if (String(n.visibility) === '0' && !isCloudNet(n.type)) return;
+    if (p2p.has(String(id))) return;        // 纯直连桥：不画图标，线直接连两个节点
     const el = document.createElement('div');
-    el.className = 'net' + (isCloud(n.type) ? ' cloud' : '');
+    el.className = 'net' + (isCloudNet(n.type) ? ' cloud' : '');
     el.dataset.netId = id;
     el.style.left = (Number(n.left || 0)) + 'px';
     el.style.top = (Number(n.top || 0)) + 'px';
@@ -303,9 +366,9 @@ function renderTopology() {
     nodesEl.appendChild(el);
   });
 
+  fit();            // 先把缩放定下来，标签的错行间距要按最终比例算
   drawLinks();
   applyT();
-  fit();
 }
 
 /* 连线单独一层：拖动节点时只重画线，不重算缩放（否则视角会跳） */
@@ -316,10 +379,10 @@ function drawLinks() {
   linksEl.innerHTML = '';
   const pts = {};
   Object.entries(L.nodes || {}).forEach(([id, n]) => {
-    pts['node' + id] = { x: Number(n.left || 0), y: Number(n.top || 0) };
+    pts['node' + id] = { x: Number(n.left || 0), y: Number(n.top || 0), kind: 'node', id };
   });
   Object.entries(L.networks || {}).forEach(([id, n]) => {
-    pts['network' + id] = { x: Number(n.left || 0), y: Number(n.top || 0) };
+    pts['network' + id] = { x: Number(n.left || 0), y: Number(n.top || 0), kind: 'network', id };
   });
   const svgNS = 'http://www.w3.org/2000/svg';
   const w = Math.max(3200, ...Object.values(pts).map(p => p.x + 400));
@@ -327,22 +390,161 @@ function drawLinks() {
   linksEl.setAttribute('width', w);
   linksEl.setAttribute('height', h);
 
-  (L.links || []).forEach(l => {
-    const A = pts[l.source] || pts[(l.source_type || 'node') + String(l.source).replace(/\D/g, '')];
-    const B = pts[l.destination] || pts[(l.destination_type || 'node') + String(l.destination).replace(/\D/g, '')];
-    if (!A || !B) return;
+  /* 端点可能是 "node1" / "network2" / 纯数字，三种都认 */
+  const endOf = (v, type) => {
+    if (v === null || v === undefined) return null;
+    const s = String(v);
+    if (pts[s]) return pts[s];
+    const m = s.match(/(\d+)/);
+    if (!m) return null;
+    const cands = [];
+    if (type) cands.push(String(type).toLowerCase() + m[1]);
+    cands.push('node' + m[1], 'network' + m[1]);
+    for (const k of cands) if (pts[k]) return pts[k];
+    return null;
+  };
+
+  const p2p = S.showP2P ? new Set() : p2pNetIds();
+  const placed = new Map();          // 节点 → 已占用标签数，同一节点旁的多个标签依次错开
+
+  const stroke = (A, B, ox, oy) => {
     const line = document.createElementNS(svgNS, 'line');
-    line.setAttribute('x1', A.x); line.setAttribute('y1', A.y);
-    line.setAttribute('x2', B.x); line.setAttribute('y2', B.y);
+    line.setAttribute('x1', A.x + ox); line.setAttribute('y1', A.y + oy);
+    line.setAttribute('x2', B.x + ox); line.setAttribute('y2', B.y + oy);
     line.setAttribute('stroke', '#33404e');
     line.setAttribute('stroke-width', '2');
     linksEl.appendChild(line);
+  };
+
+  /* 末端是「被隐藏的直连桥」的边先攒起来：一条边 = 一个接口，两个节点配好对再画成直连 */
+  const viaP2P = {};                 // netId → {nodeId: [接口名, ...]}
+  const direct = [];                 // EVE 对隐藏点对点桥输出的原生 node→node 直连边
+  (L.links || []).forEach(l => {
+    const A = endOf(l.source, l.source_type);
+    const B = endOf(l.destination, l.destination_type);
+    if (!A || !B) return;
+    const hidA = A.kind === 'network' && p2p.has(String(A.id));
+    const hidB = B.kind === 'network' && p2p.has(String(B.id));
+    if (hidA || hidB) {
+      const net = hidA ? A : B;
+      const nd = hidA ? B : A;
+      if (nd.kind !== 'node') return;
+      const iface = (hidA ? l.source_label : l.destination_label)
+        || ifacesOnNet(nd.id, net.id).join(' ') || '';
+      const box = (viaP2P[net.id] = viaP2P[net.id] || {});
+      (box[nd.id] = box[nd.id] || []).push(iface);
+      return;
+    }
+    /* 直连边（两端都是节点）：不在这里画，攒到下面按节点对分组并排错开，
+       否则两台路由器之间的多根网线会全部叠成一根 */
+    if (A.kind === 'node' && B.kind === 'node') {
+      direct.push({ A, B, la: l.source_label || '', lb: l.destination_label || '' });
+      return;
+    }
+    stroke(A, B, 0, 0);
+
+    /* EVE 在拓扑里直接给了接口名：source_label / destination_label。
+       两个节点共用一个隐藏网桥时，EVE 给的是 node→node 的直连边、两端都带名字，
+       所以这一条线上就能同时看到「互联的两个接口」。*/
+    const la = l.source_label
+      || (A.kind === 'node' && B.kind === 'network' ? ifacesOnNet(A.id, B.id).join(' ') : '');
+    const lb = l.destination_label
+      || (B.kind === 'node' && A.kind === 'network' ? ifacesOnNet(B.id, A.id).join(' ') : '');
+    addIfaceLabel(linksEl, svgNS, A, B, la, placed);
+    addIfaceLabel(linksEl, svgNS, B, A, lb, placed);
   });
+
+  /* 被隐藏的直连桥 → 两个节点之间的直线（多根网线时并排错开 9px，不叠成一条粗线） */
+  const pairs = direct.slice();
+  Object.entries(viaP2P).forEach(([nid, byNode]) => {
+    const ids = Object.keys(byNode);
+    if (ids.length !== 2) return;    // 挂 3 个以上节点的桥本来就不该隐藏，兜底不动
+    const A = pts['node' + ids[0]], B = pts['node' + ids[1]];
+    if (!A || !B) return;
+    const n = Math.max(byNode[ids[0]].length, byNode[ids[1]].length);
+    for (let i = 0; i < n; i++) {
+      pairs.push({
+        A, B,
+        la: byNode[ids[0]][Math.min(i, byNode[ids[0]].length - 1)] || '',
+        lb: byNode[ids[1]][Math.min(i, byNode[ids[1]].length - 1)] || '',
+      });
+    }
+  });
+  const tot = {}, seen = {};
+  pairs.forEach(p => {
+    p.key = [p.A.id, p.B.id].sort().join('-');
+    tot[p.key] = (tot[p.key] || 0) + 1;
+  });
+  pairs.forEach(p => {
+    const i = seen[p.key] = (seen[p.key] || 0);
+    seen[p.key] = i + 1;
+    const n = tot[p.key];
+    const off = n > 1 ? (i - (n - 1) / 2) * 9 : 0;
+    const dx = p.B.x - p.A.x, dy = p.B.y - p.A.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ox = -dy / len * off, oy = dx / len * off;
+    stroke({ x: p.A.x + ox, y: p.A.y + oy }, { x: p.B.x + ox, y: p.B.y + oy }, 0, 0);
+    // 标签锚点用「没偏移」的线算；第 i 根线（最上）的标签排最上，两端顺序一致
+    const s = n > 1 ? n - 1 - i : 0;
+    addIfaceLabel(linksEl, svgNS, p.A, p.B, p.la, placed, s);
+    addIfaceLabel(linksEl, svgNS, p.B, p.A, p.lb, placed, s);
+  });
+}
+
+/* 把接口名写在线路靠某一端的位置上（离开节点一段距离，沿法线错开避免压线）。
+   placed 按「节点 + 方向 + 线通向哪个点」分组：去往同一个目标的线（一对节点间的
+   并排网线）共用一个栈、按固定行距往上排；去往不同目标的线（比如 R6 同时连
+   R7 和 R8）各算各的锚点——标签永远贴在自己的线上，位置才能和线对上。
+   slotOverride 给并排线直接指定行号（第 i 根线 → 倒数第 i 行，两端顺序一致）。*/
+function addIfaceLabel(parent, svgNS, from, to, text, placed, slotOverride) {
+  if (!text) return;
+  const dx = to.x - from.x, dy = to.y - from.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const d = Math.min(len * 0.42, 56);            // 31（半宽）+ 15（半个标签宽）+ 留白
+  let x = from.x + dx / len * d;
+  let y = from.y + dy / len * d;
+  // 统一放在线的「上方/外侧」，躲开节点下方那行名字
+  if (Math.abs(dy) > Math.abs(dx)) x += 10; else y -= 9;
+  x = Math.round(x); y = Math.round(y);
+  const side = Math.abs(dx) > Math.abs(dy) ? (dx >= 0 ? 'r' : 'l') : (dy >= 0 ? 'd' : 'u');
+  const key = from.kind + from.id + ':' + side + ':' + Math.round(to.x) + ',' + Math.round(to.y);
+  let baseY = y, slot = 0;
+  if (slotOverride !== undefined) {
+    slot = slotOverride;
+  } else {
+    const rec = placed && placed.get(key);
+    if (rec) { baseY = rec.y; slot = rec.n; placed.set(key, { y: rec.y, n: rec.n + 1 }); }
+    else if (placed) placed.set(key, { y, n: 1 });
+  }
+  const rowH = (labelFontSize() + 6) / Math.max(S.z || 1, 0.2);
+  if (slot) y = Math.round(baseY - slot * rowH);
+  const el = document.createElementNS(svgNS, 'text');
+  el.setAttribute('class', 'iflabel');
+  el.setAttribute('x', x);
+  el.setAttribute('y', y);
+  el.setAttribute('text-anchor', 'middle');
+  el.setAttribute('dominant-baseline', 'middle');
+  el.setAttribute('fill', '#9dc0e6');
+  el.setAttribute('stroke', '#0b1117');               // 描边当底，压到线也能读
+  el.setAttribute('paint-order', 'stroke');
+  el.style.fontSize = labelFontSize() + 'px';
+  el.style.strokeWidth = (labelFontSize() / 4) + 'px';
+  el.textContent = text;
+  parent.appendChild(el);
+}
+
+function labelFontSize() {
+  return Math.min(18, Math.max(11, 11 / Math.max(S.z || 1, 0.5)));
 }
 
 function applyT() {
   $('#world').style.transform = `translate(${S.tx}px,${S.ty}px) scale(${S.z})`;
   $('#zoomLabel').textContent = Math.round(S.z * 100) + '%';
+  const fs = labelFontSize();
+  $$('#links .iflabel').forEach(el => {
+    el.style.fontSize = fs + 'px';
+    el.style.strokeWidth = (fs / 4) + 'px';
+  });
 }
 
 function fit() {
@@ -439,11 +641,13 @@ async function bulkAct(ids, action) {
   for (const id of ids) {
     try {
       if (action === 'del') {
-        await api('/api/lab/node?path=' + encodeURIComponent(S.labPath)
+        const r = await api('/api/lab/node?path=' + encodeURIComponent(S.labPath)
           + '&id=' + encodeURIComponent(id) + '&umtime=' + encodeURIComponent(S.umtime),
           { method: 'DELETE' });
+        afterWrite(r);   // 每删一个 umtime 都会变，不跟上第二个就会被并发保护拦下
       } else {
-        await api('/api/node/action', { method: 'POST', body: { path: S.labPath, id, action } });
+        const r = await api('/api/node/action', { method: 'POST', body: { path: S.labPath, id, action } });
+        afterWrite(r);
       }
       ok++;
     } catch (e) { errs.push(`${(S.lab.nodes[id] || {}).name || id}: ${e.message || e}`); }
@@ -1289,6 +1493,12 @@ function bind() {
   };
 
   $('#btnFit').onclick = fit;
+  $('#btnP2P').onclick = () => {
+    S.showP2P = !S.showP2P;
+    $('#btnP2P').classList.toggle('on', S.showP2P);
+    renderTopology();
+    toast(S.showP2P ? '已显示直连桥（可右键改名/删除）' : '直连桥已隐藏，线直接连两个节点', 'ok');
+  };
   $('#btnReload').onclick = () => S.labPath && openLab(S.labPath).catch(fail);
   $('#btnAddNode').onclick = () => togglePalette();
   $('#btnCapture').onclick = () => toggleCapPanel();
@@ -1387,18 +1597,42 @@ function bind() {
     e.preventDefault();          // 别把拖动变成选文字
   });
 
-  function startLink(id, ev) {
+  function startLink(id, ev, iface) {
     const src = S.lab.nodes[id];
     if (!src) return;
+    const x1 = Number(src.left || 0), y1 = Number(src.top || 0);
     const line = document.createElementNS(SVGNS, 'line');
-    line.setAttribute('x1', Number(src.left || 0));
-    line.setAttribute('y1', Number(src.top || 0));
-    line.setAttribute('x2', Number(src.left || 0));
-    line.setAttribute('y2', Number(src.top || 0));
+    line.setAttribute('x1', x1);
+    line.setAttribute('y1', y1);
+    line.setAttribute('x2', x1);
+    line.setAttribute('y2', y1);
     line.setAttribute('class', 'linkline');
     $('#links').appendChild(line);
-    S.linking = { id, line };
+    S.linking = { id, iface: iface || '', line, x0: ev.clientX, y0: ev.clientY };
+    $('#stage').classList.add('linking');
   }
+
+  // 拖线时把鼠标底下的节点标出来，松手才知道会接到谁身上
+  let linkHover = null;
+  function setLinkTarget(el) {
+    if (linkHover === el) return;
+    if (linkHover) linkHover.classList.remove('linktarget');
+    linkHover = el;
+    if (el) el.classList.add('linktarget');
+  }
+  function clearLinkTarget() {
+    setLinkTarget(null);
+    const st = $('#stage');
+    if (st) st.classList.remove('linking');
+  }
+
+  // 拖线时切窗口会收不到 mouseup，留着虚线会一直跟鼠标走
+  window.addEventListener('blur', () => {
+    if (!S.linking) return;
+    try { S.linking.line.remove(); } catch (e) {}
+    S.linking = null;
+    clearLinkTarget();
+  });
 
   window.addEventListener('mousemove', e => {
     if (ndrag) {
@@ -1426,6 +1660,9 @@ function bind() {
       const x = (e.clientX - r.left - S.tx) / S.z, y = (e.clientY - r.top - S.ty) / S.z;
       S.linking.line.setAttribute('x2', Math.round(x));
       S.linking.line.setAttribute('y2', Math.round(y));
+      const over = document.elementFromPoint(e.clientX, e.clientY);
+      const nd = over && over.closest ? over.closest('.nd') : null;
+      setLinkTarget(nd && nd.dataset.id !== String(S.linking.id) ? nd : null);
       return;
     }
     if (pan) {
@@ -1465,10 +1702,23 @@ function bind() {
       const lk = S.linking;
       S.linking = null;
       try { lk.line.remove(); } catch (err) {}
+      clearLinkTarget();
+      const moved = Math.abs(e.clientX - lk.x0) + Math.abs(e.clientY - lk.y0) > 4;
       const tgt = document.elementFromPoint(e.clientX, e.clientY);
       const netEl = tgt && tgt.closest ? tgt.closest('.net') : null;
-      if (netEl) { linkToNet(lk.id, netEl.dataset.netId).catch(fail); }
-      else { toast('要接到网络/云图标上（Shift+拖动 = 接线）', 'warn'); }
+      const ndEl2 = tgt && tgt.closest ? tgt.closest('.nd') : null;
+      const dstId = ndEl2 ? ndEl2.dataset.id : null;
+      if (!moved) {
+        // Shift+单击节点本来就是「加选」，别因为顺手起了一条线就弹警告
+      } else if (netEl) { linkToNet(lk.id, netEl.dataset.netId, lk.iface).catch(fail); }
+      else if (ndEl2 && dstId !== String(lk.id)) {
+        suppressClick = Date.now();       // 松手后紧跟的 click 别把选择改了
+        linkNodes(lk.id, dstId).catch(fail);
+      } else if (ndEl2) {
+        toast('不能连自己：拖到另一个节点或网络/云图标上', 'warn');
+      } else {
+        toast('松手时落在另一个节点或网络/云图标上才会接线', 'warn');
+      }
     }
 
     if (mq) {
@@ -1511,25 +1761,98 @@ function bind() {
   });
 
   // Shift+拖到网络图标上松开 → 选接口，接上
-  async function linkToNet(nodeId, netId) {
+  async function linkToNet(nodeId, netId, ifname) {
     const nd = S.lab.nodes[nodeId] || {};
     const net = (S.lab.networks || {})[netId] || {};
-    const d = await api(`/api/node?path=${encodeURIComponent(S.labPath)}&id=${nodeId}`);
-    const ifs = Object.values((d.interfaces || {}).ethernet || {});
-    if (!ifs.length) { toast('这个节点没有以太网卡', 'warn'); return; }
-    const free = ifs.find(it => !it.network_id || String(it.network_id) === '0') || ifs[0];
-    const f = await modal(`接线 · ${nd.name || nodeId} → ${net.name || netId}`, [
-      { key: 'iface', label: '接到哪个接口', type: 'select', value: free.name,
-        options: ifs.map(it => ({ value: it.name,
-          label: it.name + ((it.network_id && String(it.network_id) !== '0') ? '（已接）' : '（空）') })) },
-    ]);
-    if (!f) return;
+    let useIf = ifname;
+    if (!useIf) {
+      const d = await api(`/api/node?path=${encodeURIComponent(S.labPath)}&id=${nodeId}`);
+      const ifs = Object.values((d.interfaces || {}).ethernet || {});
+      if (!ifs.length) { toast('这个节点没有以太网卡', 'warn'); return; }
+      const f = await modal(`接线 · ${nd.name || nodeId} → ${net.name || netId}`, [
+        { key: 'iface', label: '接到哪个接口', type: 'select',
+          value: freeIfaceOf(ifs).name, options: ifaceOptions(ifs) },
+      ]);
+      if (!f) return;
+      useIf = f.iface;
+    }
     const r = await api('/api/node/ifaces', { method: 'PUT', body: guarded({
-      path: S.labPath, id: nodeId, ifaces: [{ name: f.iface, network_id: Number(netId) }] }) });
+      path: S.labPath, id: nodeId, ifaces: [{ name: useIf, network_id: Number(netId) }] }) });
     afterWrite(r);
-    toast(`${nd.name || nodeId} 的 ${f.iface} 已接到 ${net.name || netId}`, 'ok');
+    toast(`${nd.name || nodeId} 的 ${useIf} 已接到 ${net.name || netId}`, 'ok');
     await openLab(S.labPath);
     selectNode(String(nodeId)).catch(() => {});
+  }
+
+  /* Shift+拖到另一个节点上松开 → 两边各选一个网卡，共用一个网络（= 直连）。
+     EVE 的模型里没有「节点→节点」的边，两点必须经 network；所以这里默认
+     新建一个内部桥放在两节点中间，也可以选已有网络（等于接到同一个交换机）。 */
+  function freeIfaceOf(list) {
+    return list.find(it => !it.network_id || String(it.network_id) === '0') || list[0];
+  }
+  function ifaceOptions(list) {
+    return list.map(it => {
+      const used = it.network_id && String(it.network_id) !== '0';
+      return { value: it.name, label: it.name + (used ? '（已接）' : '（空）') };
+    });
+  }
+  function autoNetName() {
+    let max = 0;
+    Object.values((S.lab && S.lab.networks) || {}).forEach(n => {
+      const m = /^Net-(\d+)$/.exec((n.name || '').trim());
+      if (m) max = Math.max(max, Number(m[1]));
+    });
+    return 'Net-' + (max + 1);
+  }
+
+  async function linkNodes(aId, bId) {
+    if (!S.labPath) return;
+    const A = S.lab.nodes[aId] || {}, B = S.lab.nodes[bId] || {};
+    let da, db;
+    try {
+      [da, db] = await Promise.all([
+        api(`/api/node?path=${encodeURIComponent(S.labPath)}&id=${aId}`),
+        api(`/api/node?path=${encodeURIComponent(S.labPath)}&id=${bId}`),
+      ]);
+    } catch (e) { return fail(e); }
+    const ifsA = Object.values((da.interfaces || {}).ethernet || {});
+    const ifsB = Object.values((db.interfaces || {}).ethernet || {});
+    if (!ifsA.length || !ifsB.length) {
+      toast(`${!ifsA.length ? A.name || aId : B.name || bId} 没有以太网卡`, 'warn');
+      return;
+    }
+    const nets = Object.entries(S.lab.networks || {}).map(([id, v]) => ({ id, ...v }));
+    const fields = [
+      { key: 'aif', label: `${A.name || aId} 的接口`, type: 'select',
+        value: freeIfaceOf(ifsA).name, options: ifaceOptions(ifsA) },
+      { key: 'bif', label: `${B.name || bId} 的接口`, type: 'select',
+        value: freeIfaceOf(ifsB).name, options: ifaceOptions(ifsB) },
+      { key: 'net', label: '经由网络', type: 'select', value: '__new',
+        options: [{ value: '__new', label: `＋ 新建内部桥（${autoNetName()}，放两节点中间）` }]
+          .concat(nets.map(n => ({ value: String(n.id), label: `${n.name} (${n.type})` }))) },
+    ];
+    const f = await modal(`接线 · ${A.name || aId} ─ ${B.name || bId}`, fields);
+    if (!f) return;
+    const body = guarded({
+      path: S.labPath,
+      a: { id: aId, iface: f.aif },
+      b: { id: bId, iface: f.bif },
+    });
+    if (!f.net || f.net === '__new') {
+      body.name = autoNetName();
+      body.left = Math.round((Number(A.left || 0) + Number(B.left || 0)) / 2);
+      body.top = Math.round((Number(A.top || 0) + Number(B.top || 0)) / 2);
+    } else {
+      body.net_id = Number(f.net);
+    }
+    try {
+      const r = await api('/api/lab/link', { method: 'POST', body });
+      afterWrite(r);
+      const via = (S.lab.networks || {})[r.net] || {};
+      toast(`${A.name || aId}:${f.aif} ─ ${B.name || bId}:${f.bif} 已接`
+        + (r.created ? `（新建 ${via.name || '网络'}）` : ''), 'ok');
+      await openLab(S.labPath);
+    } catch (e) { fail(e); }
   }
 
   // 从模板库拖到画布

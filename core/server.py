@@ -213,11 +213,87 @@ class App:
         self.log("删除网络 %s" % nid)
         return {"ok": True, "umtime": self.eve.lab_umtime(path)}
 
+    def lab_ifaces(self, path):
+        """一次把整个实验所有节点的网卡拉回来，供拓扑上画接口点。
+
+        逐个调 EVE 的 nodes/{id}/interfaces（它是单节点接口），节点一般
+        只有十来个，串行可接受；一个节点查失败不影响其它节点。
+        """
+        eve = self.require()
+        nodes = eve.lab_nodes(path) or {}
+        out = {}
+        for nid in sorted(nodes, key=lambda x: (len(str(x)), str(x))):
+            try:
+                data = eve.node_interfaces(path, nid) or {}
+            except Exception:
+                continue
+            eth = data.get("ethernet") or {}
+            items = []
+            for iid, v in sorted(eth.items(),
+                                 key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 0):
+                items.append({"id": str(iid),
+                              "name": (v or {}).get("name") or ("e0/%s" % iid),
+                              "network_id": (v or {}).get("network_id") or 0})
+            out[str(nid)] = items
+        return {"nodes": out}
+
     def move_node(self, path, nid, left, top, umtime=None):
         self.require()
         self._guard(path, umtime)
         self.eve.move_node(path, nid, left, top)
         return {"ok": True, "umtime": self.eve.lab_umtime(path)}
+
+    def link_nodes(self, path, a, b, net_id=None, name=None, left=None, top=None,
+                   umtime=None):
+        """把两个节点的网卡接到同一个网络上（界面上就是「一台拖到另一台」。）
+
+        EVE 的拓扑模型里没有「节点→节点」的边：两点之间必须共用一个
+        network（bridge/pnetX）。所以连线 = 建或选一个网络，再把两边的
+        网卡都指过去；net_id 为空时就新建一个内部桥，放在两节点中点。
+        """
+        eve = self.require()
+        self._guard(path, umtime)
+        a = a or {}
+        b = b or {}
+        aid = _req(a, "id", "源节点 id")
+        bid = _req(b, "id", "目标节点 id")
+        aif = _req(a, "iface", "源接口")
+        bif = _req(b, "iface", "目标接口")
+        if str(aid) == str(bid):
+            raise EveError("同一个节点上的两个网卡直接相连没有意义")
+
+        created = False
+        if net_id in (None, "", 0, "0"):
+            before = set((eve.lab_networks(path) or {}).keys())
+            # 注意：必须先用 visibility=1 落盘。EVE 的 save() 会丢弃
+            # 「没挂接口且 visibility=0」的网络（__lab.php 序列化里
+            # count==0 && visibility==0 → continue），vis=0 的新桥接口还没接
+            # 就直接消失了，接口还没接就先没了 → 界面报「新建网络没成功」。
+            eve.add_network(path, {
+                "name": name or "Net", "type": "bridge",
+                "left": int(left if left is not None else 400),
+                "top": int(top if top is not None else 300),
+                "visibility": 1, "icon": "lan.png"})
+            after = eve.lab_networks(path) or {}
+            new = [k for k in after if k not in before]
+            if not new:
+                raise EveError("新建网络没成功：EVE 没有返回新网络")
+            net_id = max(new, key=lambda x: int(x) if str(x).isdigit() else 0)
+            created = True
+
+        eve.set_interfaces(path, aid, [{"name": aif, "network_id": int(net_id)}])
+        eve.set_interfaces(path, bid, [{"name": bif, "network_id": int(net_id)}])
+        if created:
+            # 两边接口都接上了（count=2），现在改成 visibility=0 就能安全落盘，
+            # EVE 网页版也会把它当直连、不画图标，与本界面一致
+            try:
+                eve.edit_network(path, net_id, {"visibility": 0})
+            except EveError:
+                pass    # 改不了也只是 EVE 网页版多个图标，不影响接线本身
+        self.log("接线 %s:%s ─ %s:%s（网络 %s%s）"
+                 % (aid, aif, bid, bif, net_id, "，新建" if created else ""))
+        return {"ok": True, "net": int(net_id), "created": created,
+                "umtime": eve.lab_umtime(path)}
 
     # ---------- 抓包 ----------
     def _iface_of(self, path, nid, iface=None, ifid=None):
@@ -423,6 +499,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, **a.lab_detail(q.get("path", ""))})
         if path == "/api/node":
             return self._json({"ok": True, **a.node_detail(q.get("path"), q.get("id"))})
+        if path == "/api/lab/ifaces":
+            return self._json({"ok": True, **a.lab_ifaces(q.get("path", ""))})
         if path == "/api/template":
             return self._json({"ok": True, "data": a.require().template_options(q.get("name"))})
         if path == "/api/templates":
@@ -482,6 +560,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/node/move":
             return self._json({"ok": True, **a.move_node(
                 _req(body, "path", "实验路径"), _req(body, "id", "节点 id"),
+                body.get("left"), body.get("top"), body.get("umtime"))})
+        if path == "/api/lab/link":
+            return self._json({"ok": True, **a.link_nodes(
+                _req(body, "path", "实验路径"), body.get("a"), body.get("b"),
+                body.get("net_id"), body.get("name"),
                 body.get("left"), body.get("top"), body.get("umtime"))})
         # ---------- 抓包 ----------
         if path == "/api/capture/start":

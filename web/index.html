@@ -45,6 +45,7 @@
           <button class="btn sm ghost" id="btnCapture" title="抓包并用 Wireshark 打开">抓包</button>
           <button class="btn sm" id="btnStartAll" title="启动全部节点">全部启动</button>
           <button class="btn sm" id="btnStopAll" title="停止全部节点">全部停止</button>
+          <button class="btn sm ghost" id="btnP2P" title="只挂 2 个接口的桥＝直连，默认不画图标；点一下可临时显示出来（便于改名/删除）">直连</button>
           <button class="btn sm ghost" id="btnFit" title="适应窗口">适应</button>
           <button class="btn sm ghost" id="btnReload" title="重新加载拓扑">重载</button>
         </div>
@@ -57,7 +58,7 @@
         <div class="stage-hint" id="stageHint">从左侧选择实验</div>
         <div class="marquee" id="marquee"></div>
         <div class="zoom" id="zoomLabel">100%</div>
-        <div class="stage-tip">左键框选 · Ctrl/Shift+点击加选 · 中键或 Alt+左键平移 · 滚轮缩放 · Shift+拖节点到网络＝接线</div>
+        <div class="stage-tip">左键框选 · Ctrl/Shift+点击加选 · 中键或 Alt+左键平移 · 滚轮缩放 · Shift+拖节点到另一个节点＝接线 · 已经接上的链路会标出两端接口名</div>
 
         <!-- 模板库（新建节点） -->
         <aside class="palette" id="palette">

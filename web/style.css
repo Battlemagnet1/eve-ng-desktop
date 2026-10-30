@@ -123,6 +123,9 @@ button{cursor:pointer}
 .nd-dot{position:absolute;right:-3px;top:-3px;width:9px;height:9px;border-radius:50%;
   background:#475569;border:2px solid var(--panel2)}
 .nd.running .nd-dot{background:var(--ok)}
+/* 接口不再在节点右侧竖一列点，改为直接标在链路上（见 app.js addIfaceLabel） */
+.iflabel{font-family:Consolas,"Courier New",monospace;font-weight:600;
+  letter-spacing:.2px;user-select:none}
 .net{
   position:absolute;transform:translate(-50%,-50%);width:44px;height:32px;border-radius:8px;
   background:#1a2530;border:1px dashed var(--line2);display:flex;align-items:center;
@@ -157,6 +160,7 @@ button{cursor:pointer}
 .btn.sm{padding:5px 11px;font-size:12px}
 .btn.ghost{background:transparent;border:1px solid var(--line2);color:var(--txt2)}
 .btn.ghost:hover{border-color:var(--accent);color:#fff;background:transparent}
+.btn.ghost.on{border-color:var(--accent);color:#cfe3ff;background:rgba(59,130,246,.16)}
 .btn.danger{background:var(--err)}
 input,select,textarea{
   background:var(--panel2);border:1px solid var(--line2);border-radius:6px;
@@ -340,6 +344,9 @@ a.btn{display:inline-block;text-decoration:none;text-align:center}
   background:rgba(21,27,34,.85);padding:2px 8px;border-radius:5px;border:1px solid var(--line);
   pointer-events:none;max-width:72%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .linkline{stroke:#60a5fa;stroke-width:2;stroke-dasharray:5 4}
+.stage.linking, .stage.linking .nd{cursor:crosshair}
+.nd.linktarget{outline:2px solid #60a5fa;outline-offset:2px;
+  box-shadow:0 0 0 6px rgba(96,165,250,.16)}
 .iface-row .peer{font-size:10.5px;color:var(--txt3);flex:0 0 auto;min-width:24px}
 .iface-row .peer.on{color:#6ba36b}
 .sub-hint{font-size:10.5px;color:var(--txt3);font-weight:400;margin-left:4px}
