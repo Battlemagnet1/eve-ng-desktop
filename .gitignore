@@ -3,10 +3,14 @@ __pycache__/
 *.pyo
 dist/
 build/
-*.spec
+!EVE-Desktop.spec
 data/
 .venv/
 venv/
+
+# 安装包构建产物
+installer/Output/
+installer/test-install/
 
 # 运行时产物：含服务器地址与账号信息，绝不提交
 config.json

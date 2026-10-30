@@ -30,7 +30,18 @@ EVE-NG 桌面客户端：把网页版的**实验/拓扑浏览、节点操控、�
 
 ## 安装
 
-### 1. 运行环境
+### 方式一：安装包（推荐，无需 Python）
+
+运行 `installer/Output/EVE-Desktop-Setup-<版本>.exe`：
+
+- 内置全部运行时（PyInstaller 打包），装完即用，不需要 Python 和 pip
+- 安装向导里可选「**安装 Wireshark**」——安装时从 Wireshark 官方镜像在线下载
+  （约 93MB）并静默安装，已装过会自动跳过；不勾选也随时可以后补
+- 安装包本身约 15MB；抓包功能没有 Wireshark 也能用（只在本机存 pcap 文件）
+
+### 方式二：源码运行
+
+#### 1. 运行环境
 
 - Windows 10/11（依赖系统自带的 **WebView2**，Win11 默认已装；Win10 若缺，安装 [Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)）
 - Python 3.10+
@@ -97,6 +108,17 @@ pyinstaller -w -n "EVE Desktop" ^
 > `-w` 关闭控制台窗口；`--add-data` 必须带，否则窗口白屏（前端资源没打进去）。
 
 ---
+
+## 打安装包（开发用）
+
+```bash
+installer\build-installer.bat        # 仓库根目录运行
+```
+
+两步：PyInstaller 打出 `dist/EVE-Desktop/`（`EVE-Desktop.spec`），再由
+Inno Setup 6.3+（`installer/EVE-Desktop.iss`）压成安装包。Wireshark 不打进包，
+安装时按勾选从官方镜像在线下载静默安装（`Wireshark-latest-x64.exe` 永久直链，
+双镜像容错）。中文界面用 `installer/ChineseSimplified.isl`（官方仓库 Unofficial 翻译）。
 
 ## 自测（开发用）
 
