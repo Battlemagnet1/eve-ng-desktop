@@ -55,7 +55,9 @@
           <div class="nodes" id="nodes"></div>
         </div>
         <div class="stage-hint" id="stageHint">从左侧选择实验</div>
+        <div class="marquee" id="marquee"></div>
         <div class="zoom" id="zoomLabel">100%</div>
+        <div class="stage-tip">左键框选 · Ctrl/Shift+点击加选 · 中键或 Alt+左键平移 · 滚轮缩放 · Shift+拖节点到网络＝接线</div>
 
         <!-- 模板库（新建节点） -->
         <aside class="palette" id="palette">
@@ -76,7 +78,7 @@
           </div>
           <div class="cap-list" id="capList"><div class="empty">还没有在抓的会话</div></div>
           <div class="cap-foot" id="capFoot">
-            抓到的是节点网卡上的原始流量；停止后会存到本机并用 Wireshark 打开。
+            点节点网卡上的「抓包」会立刻拉起本机 Wireshark 实时显示；这里只负责停止与留档。
           </div>
         </aside>
       </div>
@@ -191,6 +193,27 @@
 <div class="ctxmenu" id="ctxmenu"></div>
 <div class="toast" id="toast"></div>
 
+<script>
+/* 前端异常回传：WebView2 里没有控制台，出错时至少能在服务端日志看到 */
+window.onerror = function (msg, src, line, col, err) {
+  try {
+    fetch('/api/jslog', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ msg: String(msg), src: src, line: line, col: col,
+                             stack: (err && err.stack) || '' })
+    });
+  } catch (e) {}
+};
+window.addEventListener('unhandledrejection', function (ev) {
+  try {
+    fetch('/api/jslog', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ msg: 'unhandledrejection: ' + String(ev.reason),
+                             stack: (ev.reason && ev.reason.stack) || '' })
+    });
+  } catch (e) {}
+});
+</script>
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
 <script src="/app.js"></script>

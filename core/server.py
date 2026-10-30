@@ -244,7 +244,7 @@ class App:
         iid, nm = self._iface_of(path, nid, iface, ifid)
         tenant = (self.info.get("caps") or {}).get("tenant") or 0
         info = self.caps.start(self.remote, tenant, path, nid, name, iid, nm,
-                               snaplen=snaplen, bpf=bpf)
+                               snaplen=snaplen, bpf=bpf, local_dir=self.capture_dir())
         self.log("开始抓包 %s %s（%s）" % (name, nm, info["ifname"]))
         return info
 
@@ -560,6 +560,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/clip":
             return self._json({"ok": clip.set_text(body.get("text") or ""),
                                "len": len(body.get("text") or "")})
+        if path == "/api/jslog":
+            # 前端异常回传（WebView2 没有控制台，出错只能从这里看）
+            msg = "%s @%s:%s" % (body.get("msg"), body.get("src"), body.get("line"))
+            a.log("[js] " + msg, "error")
+            print("[js]", msg, "\n", (body.get("stack") or "")[:1500], flush=True)
+            return self._json({"ok": True})
         if path == "/api/term/resize":
             s = a.terms.get(body.get("sid"))
             if s:
@@ -615,8 +621,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "umtime": a.eve.lab_umtime(p_)})
         if path == "/api/lab/network":
             a.require()
-            a.eve.add_network(_req(body, "path", "实验路径"), body.get("net") or {})
-            return self._json({"ok": True})
+            p_ = _req(body, "path", "实验路径")
+            a._guard(p_, body.get("umtime"))
+            net = body.get("net") or {}
+            if body.get("id") not in (None, ""):
+                a.eve.edit_network(p_, body.get("id"), net)     # 带 id = 改属性
+            else:
+                a.eve.add_network(p_, net)                      # 不带 = 新建
+            return self._json({"ok": True, "umtime": a.eve.lab_umtime(p_)})
         return self._err("未知接口 %s" % path, 404)
 
     # ---------- 终端 SSE ----------

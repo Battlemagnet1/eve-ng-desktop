@@ -79,6 +79,21 @@ class Remote:
             raise RemoteError("命令执行失败：%s" % ex)
         return rc, o, e
 
+    def exec_stream(self, cmd):
+        """前台执行一条命令，返回可流式读取的 channel（抓包用：tcpdump -w -）。
+
+        和 run() 的区别：不把 stdout 读成字符串，直接交给调用方 recv()，
+        这样 pcap 二进制能边收边用。停止就关掉这个 channel。
+        """
+        self.connect()
+        try:
+            ch = self.transport.open_session()
+            ch.settimeout(None)
+            ch.exec_command(cmd)
+            return ch
+        except Exception as ex:
+            raise RemoteError("命令执行失败：%s" % ex)
+
     def out(self, cmd, timeout=30, default=""):
         rc, o, _e = self.run(cmd, timeout=timeout)
         return o.strip() if rc == 0 else default

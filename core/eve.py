@@ -358,6 +358,12 @@ class EveSession:
         """新建一个网络（云）。EVE 需要 name/type/left/top 等字段。"""
         return self.post("/api/labs/%s/networks" % _q(path), net)
 
+    def edit_network(self, path, nid, props):
+        """改网络属性（名字、坐标、类型）。EVE 的 editNetwork 也是「给了才改」。"""
+        body = {"id": int(nid)}
+        body.update({k: v for k, v in (props or {}).items() if v is not None})
+        return self.put("/api/labs/%s/networks/%s" % (_q(path), nid), body)
+
     def delete_network(self, path, nid):
         """删网络。EVE 会连带把接在上面的网卡断线。"""
         return self.delete("/api/labs/%s/networks/%s" % (_q(path), nid))
