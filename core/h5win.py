@@ -96,6 +96,7 @@ _JS = r"""
     }
 
     btn('粘贴', '把 Windows 剪贴板送进虚拟机剪贴板（Ctrl+Alt+V）', doPaste);
+    btn('键入', '把剪贴板内容当成键盘逐字打进去（纯文本终端没有剪贴板时的备选）', doType);
     btn('全屏', '切换全屏（F11）', fullscreen);
     btn('×', '隐藏这个工具条（下次打开窗口还在）', function () { b.remove(); });
     document.body.appendChild(b);
@@ -115,35 +116,74 @@ _JS = r"""
     catch (e) { return null; }
   }
 
-  /* 找到 clientController 作用域上的 ManagedClient（带 clientState 的那个） */
+  /* 找到 ManagedClient。
+     Guacamole 1.5 的 clientController 把连接挂在 `$scope.clientGroup.clients[]`
+     上（`clientGroup` 是 ManagedClientGroup），**没有** `$scope.client` 这个字段；
+     老版本才是 `$scope.client`。两种都要认，否则直发永远拿不到 client、
+     每次都退回到「开菜单」那条路 —— 面板关不掉就是这么来的。 */
+  function clientOf(sc) {
+    if (!sc) { return null; }
+    try {
+      var g = sc.clientGroup;
+      if (g && g.clients && g.clients.length) {
+        // 多标签时挑当前聚焦的那个
+        for (var i = 0; i < g.clients.length; i++) {
+          var c = g.clients[i];
+          if (c && c.clientProperties && c.clientProperties.focused) { return c; }
+        }
+        return g.clients[0];
+      }
+      if (sc.client && sc.client.client) { return sc.client; }
+    } catch (e) { /* 忽略 */ }
+    return null;
+  }
+
   function findClient() {
     if (!window.angular) { return null; }
-    var sels = ['[guac-client]', '#guac-menu', 'div.client', 'body'];
+    // 视图内部的元素会从 clientController 的作用域继承 clientGroup
+    var sels = ['.client-view', '.client-body', 'guac-tiled-clients',
+                '#guac-menu', 'body'];
     for (var s = 0; s < sels.length; s++) {
       var els;
       try { els = document.querySelectorAll(sels[s]); } catch (e) { continue; }
-      for (var i = 0; i < els.length && i < 3000; i++) {
-        try {
-          var sc = window.angular.element(els[i]).scope();
-          if (sc && sc.client && sc.client.clientState && sc.client.client) { return sc.client; }
-        } catch (e) { /* 没 scope 的节点跳过 */ }
+      for (var i = 0; i < els.length && i < 64; i++) {
+        var hit = null;
+        try { hit = clientOf(window.angular.element(els[i]).scope()); } catch (e) {}
+        if (hit) { return hit; }
       }
+    }
+    // 兜底：菜单作用域（几乎所有版本都能从这里上溯到同一个控制器）
+    var sc = menuScope();
+    for (var up = 0; sc && up < 12; up++) {
+      var c = clientOf(sc);
+      if (c) { return c; }
+      sc = sc.$parent;
     }
     return null;
   }
 
-  /* 直接建 clipboard 流写文本；成功返回 true */
+  /* 直接建 clipboard 流写文本。
+     用「临时包一层 createClipboardStream 看有没有真被调用」来判定成功，
+     而不是靠不抛异常 —— 否则明明没发出去也会报成功。 */
   function sendDirect(text) {
     var mc = findClient();
-    if (!mc || !mc.client || typeof mc.client.createClipboardStream !== 'function') { return false; }
+    if (!mc || !mc.client) { return false; }
+    var C = mc.client;
+    if (typeof C.createClipboardStream !== 'function') { return false; }
     if (!window.Guacamole || !window.Guacamole.StringWriter) { return false; }
+    var orig = C.createClipboardStream, used = 0;
     try {
-      var stream = mc.client.createClipboardStream('text/plain');
+      C.createClipboardStream = function () { used++; return orig.apply(C, arguments); };
+      var stream = C.createClipboardStream('text/plain');
       var writer = new window.Guacamole.StringWriter(stream);
       writer.sendText(text);
       writer.sendEnd();
-      return true;
-    } catch (e) { return false; }
+    } catch (e) {
+      return false;
+    } finally {
+      C.createClipboardStream = orig;
+    }
+    return used === 1;
   }
 
   /* ---------- 兜底：菜单 + textarea ---------- */
@@ -191,6 +231,45 @@ _JS = r"""
   }
 
   /* ---------- 动作 ---------- */
+
+  /* 逐字「打」进虚拟机：有些环境（纯文本 tty、没跑剪贴板管理器的桌面）压根
+     没有远端的「粘贴」，Ctrl+Shift+V 只会没反应。这时候只能按键盘事件发。
+     只支持 ASCII —— 中文等字符没有对应的 keysym，只能走剪贴板。 */
+  function typeInto(text, done) {
+    var mc = findClient();
+    if (!mc || !mc.client || typeof mc.client.sendKeyEvent !== 'function') { done(false); return; }
+    var C = mc.client;
+    for (var k = 0; k < text.length; k++) {
+      var code = text.charCodeAt(k);
+      if (code !== 9 && code !== 10 && (code < 32 || code > 126)) { done(false); return; }
+    }
+    var i = 0;
+    (function step() {
+      if (i >= text.length) { done(true); return; }
+      var ch = text.charAt(i++);
+      var ks = ch === '\n' ? 0xFF0D : ch === '\t' ? 0xFF09 : ch.charCodeAt(0);
+      try {
+        C.sendKeyEvent(true, ks);
+        C.sendKeyEvent(false, ks);
+      } catch (e) { done(false); return; }
+      setTimeout(step, 10);
+    })();
+  }
+
+  function doType() {
+    var api = bridge();
+    if (!api || !api.paste) { toast('本地服务还没就绪，稍等一秒再试', true); return; }
+    api.paste().then(function (r) {
+      var text = ((r && r.text) || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      if (!text) { toast('Windows 剪贴板里没有文本'); return; }
+      if (text.length > 4000) { toast('内容太长（' + text.length + ' 字符），键入太慢，请用「粘贴」', true); return; }
+      typeInto(text, function (ok) {
+        if (ok) { toast('已逐字键入（' + text.length + ' 字符）'); }
+        else { toast('键入失败：内容里有中文/特殊字符，或者没找到控制台连接', true); }
+      });
+    }).catch(function (e) { toast('读取 Windows 剪贴板失败：' + e, true); });
+  }
+
   function doPaste() {
     var api = bridge();
     if (!api || !api.paste) {
@@ -201,19 +280,24 @@ _JS = r"""
       var text = (r && r.text) || '';
       if (!text) { toast('Windows 剪贴板里没有文本'); return; }
 
+      /* Windows 剪贴板里的换行是 \r\n。原样送进 Linux 终端，\r 会被当成
+         「回车」立刻执行，现象就是满屏 ^M 加 `-bash: $'\r': command not found`。
+         统一成 \n：终端里是正常换行，图形界面里也能接受。 */
+      var norm = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
       // 首选：直连 clipboard 流，不碰左侧菜单
-      if (sendDirect(text)) {
-        toast('已送到虚拟机剪贴板（' + text.length + ' 字符）\n在虚拟机里按 Ctrl+Shift+V / Shift+Insert 粘贴');
+      if (sendDirect(norm)) {
+        toast('已送进虚拟机剪贴板（' + norm.length + ' 字符）\n在虚拟机里按 Ctrl+Shift+V / Shift+Insert 粘贴');
         return;
       }
 
       // 兜底：只能借菜单里的输入框，用完立刻关回去
       var wasOpen = menuShown();
       setMenu(true);
-      writeClipboard(text, function (ok) {
+      writeClipboard(norm, function (ok) {
         if (!wasOpen) { setTimeout(function () { setMenu(false); }, 260); }
         if (ok) {
-          toast('已送入虚拟机剪贴板（' + text.length + ' 字符）\n在虚拟机里按 Ctrl+Shift+V / Shift+Insert 粘贴');
+          toast('已送进虚拟机剪贴板（备用通道，' + norm.length + ' 字符）\n在虚拟机里按 Ctrl+Shift+V / Shift+Insert 粘贴');
         } else {
           toast('没找到 Guacamole 的剪贴板通道。\n按 Ctrl+Alt+Shift 打开侧边菜单，手动粘到「剪贴板」框里', true);
         }
@@ -238,6 +322,7 @@ _JS = r"""
 
   /* ---------- 启动 ---------- */
   window.__eveH5.paste = doPaste;      // 排错/自动化用得到
+  window.__eveH5.type = doType;
   window.__eveH5.bar = bar;
   window.__eveH5.fullscreen = fullscreen;
   function boot() { try { bar(); } catch (e) {} }
