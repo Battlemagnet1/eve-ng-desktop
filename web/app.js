@@ -1202,8 +1202,23 @@ async function openHostShell() {
   } catch (e) { fail(e); }
 }
 
-function openHtml5(url, name) {
+/* 图形控制台默认开**独立窗口**，不再塞进 dock。
+   两个理由：dock 只有 300px 高，Linux 桌面根本看不清；更关键的是
+   「粘贴 / 键入」工具条由后端在独立窗口里注入（core/h5win.py），
+   放进 iframe 就什么辅助都没有，用户只会觉得“粘贴又坏了”。
+   真开不出窗口（没装 pywebview 等）才退回 dock 里的 iframe。 */
+async function openHtml5(url, name) {
   if (!url) return toast('该节点没有图形控制台', 'err');
+  try {
+    const r = await api('/api/console/window', { method: 'POST', body: { url, title: name } });
+    if (r.mode === 'window') {
+      if (r.warn) toast(r.warn, 'warn');
+      else if (r.reused) toast('这个控制台已经开着了', 'ok');
+      else toast('已在新窗口打开 · 右下角有「粘贴 / 键入」，Ctrl+Alt+T 逐字键入', 'ok');
+      return;
+    }
+    if (r.why) toast(r.why, 'warn');
+  } catch (e) { /* 落到内嵌面板 */ }
   addIframe('html5-' + name, name + '（图形）', url);
 }
 
@@ -1216,7 +1231,7 @@ async function popHtml5(url, name) {
     if (r.warn) toast(r.warn, 'warn');
     else if (r.mode === 'browser') toast(r.why || '已用系统浏览器打开', 'warn');
     else if (r.reused) toast('这个控制台已经开着了', 'ok');
-    else toast('已在新窗口打开 · Ctrl+Alt+V 把 Windows 剪贴板送进虚拟机', 'ok');
+    else toast('已在新窗口打开 · 右下角有「粘贴 / 键入」，Ctrl+Alt+T 逐字键入', 'ok');
   } catch (e) { fail(e); }
 }
 

@@ -17,14 +17,15 @@
 
 为什么要注入而不是直接靠浏览器剪贴板
 ------------------------------------
-Guacamole 的粘贴是「先把文本传到远端剪贴板，再在虚拟机里按 Ctrl+V」。
-最干净的做法是直接调它内部的 Clipboard 流：
+Guacamole 的「粘贴」有两套完全不同的机制，用错就白忙：
 
-    mc.client.createClipboardStream('text/plain') → Guacamole.StringWriter
+* **图形桌面**：把文本送到远端剪贴板（`clipboardService.setClipboard`），
+  用户再在虚拟机里按 Ctrl+Shift+V 贴出来。
+* **纯文本控制台（tty）**：根本没有剪贴板，Ctrl+Shift+V 永远没反应 ——
+  只能把内容当成**按键**逐字打进去（`$broadcast('guacKeydown', keysym)`）。
 
-这条路径不碰任何 UI。退回方案才是「打开侧边菜单 → 找到 textarea.clipboard
-→ 写值 → 派发 input」（菜单是 ng-if 渲染的，不打开 DOM 里根本没有那个框），
-而那个面板打开后很碍事，所以用完必须关回去 —— 见 doPaste 里的注释。
+所以工具条上两个按钮各有分工：「粘贴」走剪贴板，「键入」逐字打。
+两条通道都经过真机验证（EVE 7.2 / Guacamole 1.5，见下面函数上的注释）。
 
 WebView2 里 navigator.clipboard 读权限又常被拒，所以走本地服务读 Windows
 剪贴板（core.clip），再交给页面里的脚本送进去。
@@ -95,212 +96,169 @@ _JS = r"""
       return x;
     }
 
-    btn('粘贴', '把 Windows 剪贴板送进虚拟机剪贴板（Ctrl+Alt+V）', doPaste);
-    btn('键入', '把剪贴板内容当成键盘逐字打进去（纯文本终端没有剪贴板时的备选）', doType);
+    btn('粘贴', '把 Windows 剪贴板送进虚拟机剪贴板（Ctrl+Alt+V）\n'
+      + '图形桌面里再用 Ctrl+Shift+V 贴出来；纯文本控制台没有剪贴板，请用「键入」', doPaste);
+    btn('键入', '逐字打进去（Ctrl+Alt+T）——纯文本控制台没有剪贴板，只能这样\n'
+      + '只支持英文/数字/符号，中文打不进去', doType);
     btn('全屏', '切换全屏（F11）', fullscreen);
     btn('×', '隐藏这个工具条（下次打开窗口还在）', function () { b.remove(); });
     document.body.appendChild(b);
     return b;
   }
 
-  /* ---------- Guacamole 剪贴板写入 ----------
-     首选：拿到 Guacamole 的 ManagedClient，直接用 Clipboard 流把文本发给远端。
-     这样**完全不用打开左侧菜单**（旧做法是强行 `menu.shown = true` 拿到
-     textarea 再派发 input，用完那个面板还杵在屏幕左边，关也关不掉）。
+  /* ---------- 和 Guacamole 会话打交道 ----------
+     下面这两条通道都是**真机验证过**的（Guacamole 1.5 / EVE 7.2）：
 
-     其次：真拿不到 client 时，才退回「打开菜单 → 写 textarea → 关菜单」的老路，
-     并且记得把菜单关回去。                                                  */
+     * 剪贴板：clipboardService.setClipboard(ClipboardData)
+       它内部会写本地剪贴板，然后 $broadcast('guacClipboard')，
+       guacClient 指令收到后调 ManagedClient.setClipboard 建真正的剪贴板流。
+       全程不碰 UI —— 不需要打开左侧菜单，也不需要自己找 client 对象。
+
+     * 打字：$rootScope.$broadcast('guacKeydown'/'guacKeyup', keysym)
+       Guacamole 自己的键盘链路（Guacamole.Keyboard → 广播 → guacClient →
+       client.sendKeyEvent）就是这个。注意两条前提：
+         1) 目标会话的 clientProperties.focused 必须是 true；
+         2) 必须走广播，直接调 client.sendKeyEvent 实测**没有任何效果**
+            （2026-10-31 真机对照：广播能打进去，直发打不进去）。
+
+     为什么打字这么重要：这台 linux 节点是纯文本控制台（rocky login:），
+     tty 根本没有剪贴板，Ctrl+Shift+V 永远不会有反应，只能逐字打。          */
 
   function injector() {
     try { return (window.angular && window.angular.element(document.body).injector()) || null; }
     catch (e) { return null; }
   }
 
-  /* 找到 ManagedClient。
-     Guacamole 1.5 的 clientController 把连接挂在 `$scope.clientGroup.clients[]`
-     上（`clientGroup` 是 ManagedClientGroup），**没有** `$scope.client` 这个字段；
-     老版本才是 `$scope.client`。两种都要认，否则直发永远拿不到 client、
-     每次都退回到「开菜单」那条路 —— 面板关不掉就是这么来的。 */
-  function clientOf(sc) {
-    if (!sc) { return null; }
+  function isConn(mc) {
     try {
-      var g = sc.clientGroup;
-      if (g && g.clients && g.clients.length) {
-        // 多标签时挑当前聚焦的那个
-        for (var i = 0; i < g.clients.length; i++) {
-          var c = g.clients[i];
-          if (c && c.clientProperties && c.clientProperties.focused) { return c; }
+      var s = mc.clientState.connectionState;
+      return s === 3 || String(s).toUpperCase() === 'CONNECTED';
+    } catch (e) { return false; }
+  }
+
+  /* 遍历 scope 树收集所有会话对象。
+     不写死键名（focusedClient / client / clientGroup.clients 各版本都不一样），
+     只认特征：有 clientState + client.sendKeyEvent 的对象就是 ManagedClient。 */
+  function allClients() {
+    var inj = injector(), out = [], q, root, n = 0;
+    if (!inj) { return out; }
+    try { root = inj.get('$rootScope'); } catch (e) { return out; }
+    if (!root) { return out; }
+    q = [root];
+    while (q.length && n++ < 3000) {
+      var sc = q.shift();
+      try {
+        for (var k in sc) {
+          if (k.charAt(0) === '$') { continue; }
+          var v = sc[k];
+          if (v && v.clientState && v.client && typeof v.client.sendKeyEvent === 'function'
+              && out.indexOf(v) < 0) { out.push(v); }
         }
-        return g.clients[0];
-      }
-      if (sc.client && sc.client.client) { return sc.client; }
-    } catch (e) { /* 忽略 */ }
-    return null;
-  }
-
-  function findClient() {
-    if (!window.angular) { return null; }
-    // 视图内部的元素会从 clientController 的作用域继承 clientGroup
-    var sels = ['.client-view', '.client-body', 'guac-tiled-clients',
-                '#guac-menu', 'body'];
-    for (var s = 0; s < sels.length; s++) {
-      var els;
-      try { els = document.querySelectorAll(sels[s]); } catch (e) { continue; }
-      for (var i = 0; i < els.length && i < 64; i++) {
-        var hit = null;
-        try { hit = clientOf(window.angular.element(els[i]).scope()); } catch (e) {}
-        if (hit) { return hit; }
-      }
+      } catch (e) { /* 个别 scope 取属性会抛，跳过 */ }
+      var ch = sc.$$childHead;
+      while (ch) { q.push(ch); ch = ch.$$nextSibling; }
     }
-    // 兜底：菜单作用域（几乎所有版本都能从这里上溯到同一个控制器）
-    var sc = menuScope();
-    for (var up = 0; sc && up < 12; up++) {
-      var c = clientOf(sc);
-      if (c) { return c; }
-      sc = sc.$parent;
+    return out;
+  }
+
+  function pickClient() {
+    var all = allClients(), i, c;
+    for (i = 0; i < all.length; i++) {          // 先找「已聚焦且已连接」的
+      c = all[i];
+      if (isConn(c) && c.clientProperties && c.clientProperties.focused) { return c; }
     }
-    return null;
+    for (i = 0; i < all.length; i++) { if (isConn(all[i])) { return all[i]; } }
+    return all.length ? all[0] : null;
   }
 
-  /* 直接建 clipboard 流写文本。
-     用「临时包一层 createClipboardStream 看有没有真被调用」来判定成功，
-     而不是靠不抛异常 —— 否则明明没发出去也会报成功。 */
-  function sendDirect(text) {
-    var mc = findClient();
-    if (!mc || !mc.client) { return false; }
-    var C = mc.client;
-    if (typeof C.createClipboardStream !== 'function') { return false; }
-    if (!window.Guacamole || !window.Guacamole.StringWriter) { return false; }
-    var orig = C.createClipboardStream, used = 0;
+  /* 送剪贴板：官方 clipboardService 通道，不碰 UI */
+  function sendClipboard(text) {
+    var inj = injector(), CD, CS;
+    if (!inj) { return false; }
     try {
-      C.createClipboardStream = function () { used++; return orig.apply(C, arguments); };
-      var stream = C.createClipboardStream('text/plain');
-      var writer = new window.Guacamole.StringWriter(stream);
-      writer.sendText(text);
-      writer.sendEnd();
-    } catch (e) {
-      return false;
-    } finally {
-      C.createClipboardStream = orig;
-    }
-    return used === 1;
-  }
-
-  /* ---------- 兜底：菜单 + textarea ---------- */
-
-  function menuScope() {
+      CD = inj.get('ClipboardData');
+      CS = inj.get('clipboardService');
+    } catch (e) { return false; }
+    if (!CD || !CS || typeof CS.setClipboard !== 'function') { return false; }
     try {
-      var el = document.getElementById('guac-menu');
-      if (!el || !window.angular) { return null; }
-      var sc = window.angular.element(el).scope();
-      return sc && sc.menu ? sc : null;
-    } catch (e) { return null; }
-  }
-
-  function menuShown() {
-    var sc = menuScope();
-    return !!(sc && sc.menu && sc.menu.shown);
-  }
-
-  function setMenu(shown) {
-    var sc = menuScope();
-    if (!sc) { return false; }
-    try {
-      sc.$apply(function () { sc.menu.shown = shown; });
+      CS.setClipboard(new CD({ type: 'text/plain', data: text }));
       return true;
     } catch (e) { return false; }
   }
 
-  function writeClipboard(text, cb) {
-    var tries = 0;
-    (function loop() {
-      var ta = document.querySelector('textarea.clipboard') || document.querySelector('.clipboard');
-      if (ta) {
-        try {
-          ta.disabled = false;
-          ta.value = text;
-          ta.dispatchEvent(new Event('input', { bubbles: true }));
-          ta.dispatchEvent(new Event('change', { bubbles: true }));
-          cb(true);
-          return;
-        } catch (e) { /* 继续重试 */ }
-      }
-      if (++tries > 25) { cb(false); return; }
-      setTimeout(loop, 120);
-    })();
-  }
+  /* 逐字打进虚拟机（tty 唯一可行的办法）。
+     只支持 ASCII：keysym 就是字符码；中文没有对应 keysym，只能走剪贴板。
+     换行用 0xFF0D（Return），制表符 0xFF09。                              */
+  function sendKeys(text, done) {
+    done = done || function () {};
+    var inj = injector(), root = null, mc;
+    if (!inj) { done(false, '页面还没加载完'); return; }
+    try { root = inj.get('$rootScope'); } catch (e) { root = null; }
+    if (!root) { done(false, '找不到控制台会话'); return; }
+    mc = pickClient();
+    if (!mc) { done(false, '控制台还没连上，等画面出来再试'); return; }
+    if (mc.clientProperties) { mc.clientProperties.focused = true; }
 
-  /* ---------- 动作 ---------- */
-
-  /* 逐字「打」进虚拟机：有些环境（纯文本 tty、没跑剪贴板管理器的桌面）压根
-     没有远端的「粘贴」，Ctrl+Shift+V 只会没反应。这时候只能按键盘事件发。
-     只支持 ASCII —— 中文等字符没有对应的 keysym，只能走剪贴板。 */
-  function typeInto(text, done) {
-    var mc = findClient();
-    if (!mc || !mc.client || typeof mc.client.sendKeyEvent !== 'function') { done(false); return; }
-    var C = mc.client;
-    for (var k = 0; k < text.length; k++) {
-      var code = text.charCodeAt(k);
-      if (code !== 9 && code !== 10 && (code < 32 || code > 126)) { done(false); return; }
-    }
+    var kb = { pressed: {} };     // 部分监听器会读第 2 个参数的 pressed
     var i = 0;
     (function step() {
       if (i >= text.length) { done(true); return; }
-      var ch = text.charAt(i++);
-      var ks = ch === '\n' ? 0xFF0D : ch === '\t' ? 0xFF09 : ch.charCodeAt(0);
+      var ch = text.charAt(i++), ks;
+      if (ch === '\n') { ks = 0xFF0D; }
+      else if (ch === '\t') { ks = 0xFF09; }
+      else {
+        var c = ch.charCodeAt(0);
+        if (c < 32 || c > 126) {
+          done(false, '第 ' + i + ' 个字符「' + ch + '」不是英文/数字/符号，'
+            + '纯文本控制台只能逐字打 ASCII');
+          return;
+        }
+        ks = c;
+      }
       try {
-        C.sendKeyEvent(true, ks);
-        C.sendKeyEvent(false, ks);
-      } catch (e) { done(false); return; }
-      setTimeout(step, 10);
+        root.$broadcast('guacKeydown', ks, kb);
+        root.$broadcast('guacKeyup', ks, kb);
+      } catch (e) { done(false, '发送按键失败：' + e); return; }
+      setTimeout(step, 12);
     })();
+  }
+
+  /* 统一换行：Windows 剪贴板是 \r\n，原样送进终端会变成 ^M 加
+     `-bash: $'\r': command not found`，一律折成 \n。 */
+  function norm(s) {
+    return String(s || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  }
+
+  /* ---------- 动作 ---------- */
+  function doPaste() {
+    var api = bridge();
+    if (!api || !api.paste) { toast('本地服务还没就绪，稍等一秒再试', true); return; }
+    api.paste().then(function (r) {
+      var text = norm(r && r.text);
+      if (!text) { toast('Windows 剪贴板里没有文本'); return; }
+      if (sendClipboard(text)) {
+        toast('已送进虚拟机剪贴板（' + text.length + ' 字符）\n'
+          + '图形桌面里按 Ctrl+Shift+V 粘贴；纯文本控制台没有剪贴板，请改用「键入」');
+      } else {
+        toast('这台控制台没有剪贴板通道\n请改用「键入」（Ctrl+Alt+T）', true);
+      }
+    }).catch(function (e) { toast('读取 Windows 剪贴板失败：' + e, true); });
   }
 
   function doType() {
     var api = bridge();
     if (!api || !api.paste) { toast('本地服务还没就绪，稍等一秒再试', true); return; }
     api.paste().then(function (r) {
-      var text = ((r && r.text) || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      var text = norm(r && r.text);
       if (!text) { toast('Windows 剪贴板里没有文本'); return; }
-      if (text.length > 4000) { toast('内容太长（' + text.length + ' 字符），键入太慢，请用「粘贴」', true); return; }
-      typeInto(text, function (ok) {
-        if (ok) { toast('已逐字键入（' + text.length + ' 字符）'); }
-        else { toast('键入失败：内容里有中文/特殊字符，或者没找到控制台连接', true); }
-      });
-    }).catch(function (e) { toast('读取 Windows 剪贴板失败：' + e, true); });
-  }
-
-  function doPaste() {
-    var api = bridge();
-    if (!api || !api.paste) {
-      toast('本地服务还没就绪，稍等一秒再试', true);
-      return;
-    }
-    api.paste().then(function (r) {
-      var text = (r && r.text) || '';
-      if (!text) { toast('Windows 剪贴板里没有文本'); return; }
-
-      /* Windows 剪贴板里的换行是 \r\n。原样送进 Linux 终端，\r 会被当成
-         「回车」立刻执行，现象就是满屏 ^M 加 `-bash: $'\r': command not found`。
-         统一成 \n：终端里是正常换行，图形界面里也能接受。 */
-      var norm = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-
-      // 首选：直连 clipboard 流，不碰左侧菜单
-      if (sendDirect(norm)) {
-        toast('已送进虚拟机剪贴板（' + norm.length + ' 字符）\n在虚拟机里按 Ctrl+Shift+V / Shift+Insert 粘贴');
+      if (text.length > 4000) {
+        toast('内容太长（' + text.length + ' 字符），逐字键入要很久，请用「粘贴」', true);
         return;
       }
-
-      // 兜底：只能借菜单里的输入框，用完立刻关回去
-      var wasOpen = menuShown();
-      setMenu(true);
-      writeClipboard(norm, function (ok) {
-        if (!wasOpen) { setTimeout(function () { setMenu(false); }, 260); }
-        if (ok) {
-          toast('已送进虚拟机剪贴板（备用通道，' + norm.length + ' 字符）\n在虚拟机里按 Ctrl+Shift+V / Shift+Insert 粘贴');
-        } else {
-          toast('没找到 Guacamole 的剪贴板通道。\n按 Ctrl+Alt+Shift 打开侧边菜单，手动粘到「剪贴板」框里', true);
-        }
+      toast('正在键入…（' + text.length + ' 字符）');
+      sendKeys(text, function (ok, why) {
+        if (ok) { toast('已键入 ' + text.length + ' 字符'); }
+        else { toast('键入失败：' + why, true); }
       });
     }).catch(function (e) { toast('读取 Windows 剪贴板失败：' + e, true); });
   }
@@ -317,12 +275,18 @@ _JS = r"""
     if (ev.ctrlKey && ev.altKey && !ev.shiftKey && k === 'v') {
       ev.preventDefault(); ev.stopPropagation(); doPaste(); return;
     }
+    if (ev.ctrlKey && ev.altKey && !ev.shiftKey && k === 't') {
+      ev.preventDefault(); ev.stopPropagation(); doType(); return;
+    }
     if (k === 'f11') { ev.preventDefault(); ev.stopPropagation(); fullscreen(); }
   }, true);
 
   /* ---------- 启动 ---------- */
   window.__eveH5.paste = doPaste;      // 排错/自动化用得到
   window.__eveH5.type = doType;
+  window.__eveH5.clip = sendClipboard;
+  window.__eveH5.keys = sendKeys;
+  window.__eveH5.client = pickClient;
   window.__eveH5.bar = bar;
   window.__eveH5.fullscreen = fullscreen;
   function boot() { try { bar(); } catch (e) {} }
