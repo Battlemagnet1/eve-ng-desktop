@@ -27,6 +27,10 @@ a = Analysis(
         'pythonnet',
         # paramiko 依赖链的冷门分支
         'paramiko.ed25519',
+        # 图形控制台的证书放行（按需导入，静态分析容易漏）
+        'core.h5trust',
+        'cryptography',
+        'cryptography.x509',
     ],
     hookspath=[],
     hooksconfig={},

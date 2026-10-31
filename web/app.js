@@ -738,19 +738,28 @@ function renderInspector(d) {
         title="在 ${esc(it.name)} 上抓包（实时灌进本机 Wireshark）">抓包</button></div>`;
   }).join('');
 
+  // Linux / Windows 这类节点的 console 是 vnc 或 rdp，根本没有串口，
+  // 「CLI 控制台」连上去只会是一堆乱码，这里按节点实际的控制台类型给按钮。
+  const con = String(n.console || '').toLowerCase();
+  const graphical = con === 'vnc' || con === 'rdp';
   box.innerHTML = `
     <div class="kv"><span class="k">名称</span><span class="v">${esc(n.name)}</span></div>
     <div class="kv"><span class="k">模板</span><span class="v">${esc(n.template || n.type)}</span></div>
     <div class="kv"><span class="k">镜像</span><span class="v">${esc(n.image || '-')}</span></div>
     <div class="kv"><span class="k">内存</span><span class="v">${esc(n.ram || '-')} MB</span></div>
     <div class="kv"><span class="k">状态</span><span class="v">${isRunning(n) ? '运行中' : '已停止'}</span></div>
+    <div class="kv"><span class="k">控制台</span><span class="v">${graphical ? esc(con.toUpperCase()) : '串口（telnet）'}</span></div>
     <div class="kv"><span class="k">控制台端口</span><span class="v">${d.console_port}</span></div>
     <div class="insp-actions">
       <button class="btn sm" data-act="start">启动</button>
       <button class="btn sm ghost" data-act="stop">停止</button>
       <button class="btn sm ghost" data-act="wipe">擦除</button>
-      <button class="btn sm" data-act="term">CLI 控制台</button>
-      ${d.html5 ? '<button class="btn sm ghost" data-act="html5">图形控制台</button>' : ''}
+      ${graphical
+        ? (d.html5
+            ? '<button class="btn sm" data-act="html5">图形控制台</button>'
+            : '<button class="btn sm ghost" disabled title="该节点只有 VNC/RDP 控制台，但这台服务器没启用 html5">图形控制台</button>')
+        : '<button class="btn sm" data-act="term">CLI 控制台</button>'}
+      ${!graphical && d.html5 ? '<button class="btn sm ghost" data-act="html5">图形控制台</button>' : ''}
       <button class="btn sm ghost" data-act="rename">改名</button>
       <button class="btn sm ghost" data-act="icon">图标…</button>
       <button class="btn sm ghost" data-act="edit">属性…</button>
@@ -1150,6 +1159,11 @@ function dockHide() {
 }
 
 async function openNodeTerm(id, name) {
+  // 深链（#lab=..&term=1）和旧习惯都可能直接叫 CLI 控制台。Linux/Windows 这类
+  // 节点只有 VNC/RDP，串口连上去是乱码，这里直接换成图形控制台。
+  const n = ((S.lab || {}).nodes || {})[id] || {};
+  const con = String(n.console || '').toLowerCase();
+  if (con === 'vnc' || con === 'rdp') return openHtml5(n.url, n.name || name);
   try {
     const r = await api('/api/term/open', { method: 'POST', body: {
       kind: 'node', path: S.labPath, id } });
@@ -2022,8 +2036,11 @@ function bind() {
       ]);
       return;
     }
+    const con = String(n.console || '').toLowerCase();
+    const wantGraph = con === 'vnc' || con === 'rdp';   // 这类节点没有串口
     const menu = [
-      ['打开 CLI 控制台', () => openNodeTerm(id, n.name)],
+      wantGraph ? ['打开图形控制台', () => openHtml5(n.url, n.name)]
+                : ['打开 CLI 控制台', () => openNodeTerm(id, n.name)],
       ['启动', () => act(id, 'start')],
       ['停止', () => act(id, 'stop')],
       null,

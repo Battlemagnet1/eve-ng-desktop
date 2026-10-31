@@ -108,9 +108,32 @@ class App:
                 self.remote = None
         self.eve = sess
         self.info = info
+        if scheme == "https":
+            # 图形控制台要 WebView2 放行这张证书，白名单只能在进程启动时设，
+            # 所以这里把指纹存进 profile（下次启动直接用），并提示本次是否已生效。
+            self._remember_cert(p.get("id"), host, port)
         self.log("已连接 %s（EVE %s%s）" % (host, sess.version,
                                            " · SSH 可用" if info["ssh"] else " · 仅 API"))
         return info
+
+    def _remember_cert(self, pid, host, port):
+        """记住服务器的证书指纹，供下次启动时给内嵌浏览器放行。"""
+        try:
+            from core import h5trust
+            h = h5trust.spki_hash(host, port)
+            if not h:
+                return
+            if h not in h5trust.current_hashes():
+                self.log("图形控制台：这台服务器的自签证书本次未放行，重启客户端后生效"
+                         "（CLI 控制台不受影响）", "warn")
+            pid = pid or self.cfg.data.get("active")
+            for q in self.cfg.data.get("profiles", []):
+                if q.get("id") == pid and q.get("cert_spki") != h:
+                    q["cert_spki"] = h
+                    self.cfg.save()
+                    break
+        except Exception as e:
+            self.log("保存证书指纹失败（不影响本次连接）：%s" % e, "warn")
 
     def _remember_scheme(self, pid, scheme):
         """把探到的协议写回配置，下次连接就不用再试错了。"""

@@ -49,6 +49,18 @@ def main():
     args = ap.parse_args()
 
     cfg = Config()
+
+    # 图形控制台是 <iframe>，走 WebView2 自己的网络栈。新版 EVE 用自签证书，
+    # 不提前把那张证书放行，控制台里只会看到「你的连接不是专用连接」。
+    # 只放行「这台服务器现在用的那张证书」，不是全局关掉证书校验。
+    # 必须在 webview.start() 之前设好（WebView2 创建环境时读一次）。
+    try:
+        from core import h5trust
+        _, why = h5trust.apply_from_config(cfg)
+        print("[eve-desktop] %s" % why, flush=True)
+    except Exception as e:
+        print("[eve-desktop] 证书放行准备失败（不影响其他功能）：%s" % e, flush=True)
+
     app = server.App(cfg)
     app.debug = args.debug
     httpd = server.serve(app, "127.0.0.1", args.port)
