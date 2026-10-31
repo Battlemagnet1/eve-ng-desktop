@@ -17,12 +17,17 @@
 
 为什么要注入而不是直接靠浏览器剪贴板
 ------------------------------------
-Guacamole 的粘贴是「先把文本传到远端剪贴板，再在虚拟机里按 Ctrl+V」，
-中间那个文本框在侧边菜单里，而且菜单是 ng-if 渲染的 —— 不打开菜单，
-DOM 里连 textarea 都没有。WebView2 里 navigator.clipboard 读权限又常被拒，
-所以走本地服务读 Windows 剪贴板（core.clip），再用 JS 把文本写进那个
-textarea 并触发 input 事件（Guacamole 的指令就是监听 input/change 的），
-效果等同于用户手动粘贴。
+Guacamole 的粘贴是「先把文本传到远端剪贴板，再在虚拟机里按 Ctrl+V」。
+最干净的做法是直接调它内部的 Clipboard 流：
+
+    mc.client.createClipboardStream('text/plain') → Guacamole.StringWriter
+
+这条路径不碰任何 UI。退回方案才是「打开侧边菜单 → 找到 textarea.clipboard
+→ 写值 → 派发 input」（菜单是 ng-if 渲染的，不打开 DOM 里根本没有那个框），
+而那个面板打开后很碍事，所以用完必须关回去 —— 见 doPaste 里的注释。
+
+WebView2 里 navigator.clipboard 读权限又常被拒，所以走本地服务读 Windows
+剪贴板（core.clip），再交给页面里的脚本送进去。
 
 自签证书不用管：WebView2 的 SPKI 白名单是进程级环境变量，主窗口和这个
 窗口共用同一个 WebView2 环境（见 core/h5trust.py）。
@@ -98,9 +103,50 @@ _JS = r"""
   }
 
   /* ---------- Guacamole 剪贴板写入 ----------
-     Guacamole 的侧边菜单是 ng-if 渲染的：菜单没打开时 DOM 里没有
-     textarea.clipboard。所以先想办法把菜单打开，再往 textarea 里写值，
-     最后派发 input 事件（guacClipboard 指令监听的就是 input/change）。   */
+     首选：拿到 Guacamole 的 ManagedClient，直接用 Clipboard 流把文本发给远端。
+     这样**完全不用打开左侧菜单**（旧做法是强行 `menu.shown = true` 拿到
+     textarea 再派发 input，用完那个面板还杵在屏幕左边，关也关不掉）。
+
+     其次：真拿不到 client 时，才退回「打开菜单 → 写 textarea → 关菜单」的老路，
+     并且记得把菜单关回去。                                                  */
+
+  function injector() {
+    try { return (window.angular && window.angular.element(document.body).injector()) || null; }
+    catch (e) { return null; }
+  }
+
+  /* 找到 clientController 作用域上的 ManagedClient（带 clientState 的那个） */
+  function findClient() {
+    if (!window.angular) { return null; }
+    var sels = ['[guac-client]', '#guac-menu', 'div.client', 'body'];
+    for (var s = 0; s < sels.length; s++) {
+      var els;
+      try { els = document.querySelectorAll(sels[s]); } catch (e) { continue; }
+      for (var i = 0; i < els.length && i < 3000; i++) {
+        try {
+          var sc = window.angular.element(els[i]).scope();
+          if (sc && sc.client && sc.client.clientState && sc.client.client) { return sc.client; }
+        } catch (e) { /* 没 scope 的节点跳过 */ }
+      }
+    }
+    return null;
+  }
+
+  /* 直接建 clipboard 流写文本；成功返回 true */
+  function sendDirect(text) {
+    var mc = findClient();
+    if (!mc || !mc.client || typeof mc.client.createClipboardStream !== 'function') { return false; }
+    if (!window.Guacamole || !window.Guacamole.StringWriter) { return false; }
+    try {
+      var stream = mc.client.createClipboardStream('text/plain');
+      var writer = new window.Guacamole.StringWriter(stream);
+      writer.sendText(text);
+      writer.sendEnd();
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /* ---------- 兜底：菜单 + textarea ---------- */
 
   function menuScope() {
     try {
@@ -111,23 +157,16 @@ _JS = r"""
     } catch (e) { return null; }
   }
 
-  function openMenu() {
+  function menuShown() {
     var sc = menuScope();
-    if (sc) {
-      try {
-        sc.$apply(function () { sc.menu.shown = true; });
-        return true;
-      } catch (e) { /* 落到合成按键 */ }
-    }
-    // 兜底：Guacamole 的菜单快捷键 Ctrl+Alt+Shift
+    return !!(sc && sc.menu && sc.menu.shown);
+  }
+
+  function setMenu(shown) {
+    var sc = menuScope();
+    if (!sc) { return false; }
     try {
-      [17, 18, 16].forEach(function (code) {
-        document.dispatchEvent(new KeyboardEvent('keydown', {
-          key: code === 17 ? 'Control' : code === 18 ? 'Alt' : 'Shift',
-          keyCode: code, which: code, bubbles: true, cancelable: true,
-          ctrlKey: true, altKey: true, shiftKey: true
-        }));
-      });
+      sc.$apply(function () { sc.menu.shown = shown; });
       return true;
     } catch (e) { return false; }
   }
@@ -155,18 +194,28 @@ _JS = r"""
   function doPaste() {
     var api = bridge();
     if (!api || !api.paste) {
-      toast('本地服务还没就绪，稍等一秒再试（或按 Ctrl+Alt+Shift 用 Guacamole 自带的剪贴板面板）', true);
+      toast('本地服务还没就绪，稍等一秒再试', true);
       return;
     }
     api.paste().then(function (r) {
       var text = (r && r.text) || '';
       if (!text) { toast('Windows 剪贴板里没有文本'); return; }
-      openMenu();
+
+      // 首选：直连 clipboard 流，不碰左侧菜单
+      if (sendDirect(text)) {
+        toast('已送到虚拟机剪贴板（' + text.length + ' 字符）\n在虚拟机里按 Ctrl+Shift+V / Shift+Insert 粘贴');
+        return;
+      }
+
+      // 兜底：只能借菜单里的输入框，用完立刻关回去
+      var wasOpen = menuShown();
+      setMenu(true);
       writeClipboard(text, function (ok) {
+        if (!wasOpen) { setTimeout(function () { setMenu(false); }, 260); }
         if (ok) {
           toast('已送入虚拟机剪贴板（' + text.length + ' 字符）\n在虚拟机里按 Ctrl+Shift+V / Shift+Insert 粘贴');
         } else {
-          toast('没找到 Guacamole 的剪贴板面板。\n按 Ctrl+Alt+Shift 打开侧边菜单，再点「粘贴」重试', true);
+          toast('没找到 Guacamole 的剪贴板通道。\n按 Ctrl+Alt+Shift 打开侧边菜单，手动粘到「剪贴板」框里', true);
         }
       });
     }).catch(function (e) { toast('读取 Windows 剪贴板失败：' + e, true); });
