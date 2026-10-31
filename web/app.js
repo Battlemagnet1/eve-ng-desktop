@@ -756,10 +756,11 @@ function renderInspector(d) {
       <button class="btn sm ghost" data-act="wipe">擦除</button>
       ${graphical
         ? (d.html5
-            ? '<button class="btn sm" data-act="html5">图形控制台</button>'
+            ? '<button class="btn sm" data-act="html5" title="在底部 dock 里打开">图形控制台</button>'
+              + '<button class="btn sm" data-act="html5win" title="开一个独立的大窗口：可缩放/最大化，Ctrl+Alt+V 把 Windows 剪贴板送进虚拟机">⤢ 独立窗口</button>'
             : '<button class="btn sm ghost" disabled title="该节点只有 VNC/RDP 控制台，但这台服务器没启用 html5">图形控制台</button>')
-        : '<button class="btn sm" data-act="term">CLI 控制台</button>'}
-      ${!graphical && d.html5 ? '<button class="btn sm ghost" data-act="html5">图形控制台</button>' : ''}
+        : '<button class="btn sm" data-act="term">CLI 控制台</button>'
+          + (d.html5 ? '<button class="btn sm ghost" data-act="html5win" title="开一个独立大窗口显示图形控制台">⤢ 独立窗口</button>' : '')}
       <button class="btn sm ghost" data-act="rename">改名</button>
       <button class="btn sm ghost" data-act="icon">图标…</button>
       <button class="btn sm ghost" data-act="edit">属性…</button>
@@ -790,6 +791,8 @@ function renderInspector(d) {
         openNodeTerm(n.id, n.name);
       } else if (act === 'html5') {
         openHtml5(d.html5, n.name);
+      } else if (act === 'html5win') {
+        popHtml5(d.html5, n.name);
       } else if (act === 'rename') {
         await renameNode(n.id, n.name);
       } else if (act === 'icon') {
@@ -1147,13 +1150,33 @@ async function openPcap(file) {
 }
 
 /* ------------------------------------------------------------------ 终端 */
+const DOCK_MIN = 140;
+
+/* dock 高度可拖拽：图形控制台塞在 300px 里根本没法用，至少要能自己拉大。
+   高度记在 localStorage，下次打开还是这个高度。 */
+function dockSetHeight(h) {
+  const dock = $('#dock');
+  if (!dock) return;
+  const max = Math.max(DOCK_MIN, window.innerHeight - 160);
+  h = Math.round(Math.max(DOCK_MIN, Math.min(h, max)));
+  dock.style.height = h + 'px';
+  dock.style.flex = '0 0 ' + h + 'px';
+  try { localStorage.setItem('dockH', String(h)); } catch (e) {}
+  if (S.lab) setTimeout(fit, 120);
+}
+
 function dockShow() {
   $('#dock').classList.add('open');
   $('#dockToggle').classList.remove('show');
+  const h = Number(localStorage.getItem('dockH') || 0);
+  if (h > 0) dockSetHeight(h);
   setTimeout(() => { if (S.lab) fit(); }, 200);
 }
 function dockHide() {
-  $('#dock').classList.remove('open');
+  const dock = $('#dock');
+  dock.classList.remove('open');
+  dock.style.height = '';
+  dock.style.flex = '';
   $('#dockToggle').classList.add('show');
   setTimeout(() => { if (S.lab) fit(); }, 200);
 }
@@ -1161,9 +1184,10 @@ function dockHide() {
 async function openNodeTerm(id, name) {
   // 深链（#lab=..&term=1）和旧习惯都可能直接叫 CLI 控制台。Linux/Windows 这类
   // 节点只有 VNC/RDP，串口连上去是乱码，这里直接换成图形控制台。
+  // 而且直接开**独立窗口**：dock 只有 300px 高，1024x768 的桌面挤进去没法用。
   const n = ((S.lab || {}).nodes || {})[id] || {};
   const con = String(n.console || '').toLowerCase();
-  if (con === 'vnc' || con === 'rdp') return openHtml5(n.url, n.name || name);
+  if (con === 'vnc' || con === 'rdp') return popHtml5(n.url, n.name || name);
   try {
     const r = await api('/api/term/open', { method: 'POST', body: {
       kind: 'node', path: S.labPath, id } });
@@ -1183,12 +1207,27 @@ function openHtml5(url, name) {
   addIframe('html5-' + name, name + '（图形）', url);
 }
 
+/* 图形控制台开成独立窗口：dock 里只有 300px 高，Linux 桌面根本看不清。
+   窗口由后端（core/h5win.py）创建，那里还会注入剪贴板桥接脚本。 */
+async function popHtml5(url, name) {
+  if (!url) return toast('该节点没有图形控制台', 'err');
+  try {
+    const r = await api('/api/console/window', { method: 'POST', body: { url, title: name } });
+    if (r.warn) toast(r.warn, 'warn');
+    else if (r.mode === 'browser') toast(r.why || '已用系统浏览器打开', 'warn');
+    else if (r.reused) toast('这个控制台已经开着了', 'ok');
+    else toast('已在新窗口打开 · Ctrl+Alt+V 把 Windows 剪贴板送进虚拟机', 'ok');
+  } catch (e) { fail(e); }
+}
+
 function addIframe(key, title, url) {
   const sid = 'iframe:' + key + ':' + Date.now();
   const tab = document.createElement('div');
   tab.className = 'dtab';
   tab.dataset.sid = sid;
-  tab.innerHTML = `${esc(title)}<span class="x">×</span>`;
+  tab.dataset.url = url;
+  tab.dataset.title = title;
+  tab.innerHTML = `${esc(title)}<span class="pop" title="在独立窗口打开（可缩放、支持粘贴）">⤢</span><span class="x">×</span>`;
   $('#dtabs').appendChild(tab);
 
   const pane = document.createElement('div');
@@ -2041,6 +2080,9 @@ function bind() {
     const menu = [
       wantGraph ? ['打开图形控制台', () => openHtml5(n.url, n.name)]
                 : ['打开 CLI 控制台', () => openNodeTerm(id, n.name)],
+      ...(wantGraph && n.url
+        ? [['在独立窗口打开（Ctrl+Alt+V 可粘贴）', () => popHtml5(n.url, n.name)]]
+        : []),
       ['启动', () => act(id, 'start')],
       ['停止', () => act(id, 'stop')],
       null,
@@ -2110,12 +2152,34 @@ function bind() {
   // 终端 dock
   $('#dtabs').onclick = e => {
     const x = e.target.closest('.x');
+    const pop = e.target.closest('.pop');
     const tab = e.target.closest('.dtab');
     if (!tab) return;
-    if (x) closeTerm(tab.dataset.sid); else activateTerm(tab.dataset.sid);
+    if (x) closeTerm(tab.dataset.sid);
+    else if (pop) popHtml5(tab.dataset.url, tab.dataset.title);
+    else activateTerm(tab.dataset.sid);
   };
   $('#btnDockHide').onclick = dockHide;
   $('#dockToggle').onclick = dockShow;
+  const rz = $('#dockResize');
+  if (rz) {
+    rz.onmousedown = ev => {
+      ev.preventDefault();
+      const startY = ev.clientY;
+      const startH = $('#dock').getBoundingClientRect().height;
+      document.body.classList.add('dock-resizing');
+      const move = e2 => dockSetHeight(startH + (startY - e2.clientY));
+      const up = () => {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        document.body.classList.remove('dock-resizing');
+        if (S.lab) fit();
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    };
+    rz.ondblclick = () => dockSetHeight(Math.round(window.innerHeight * 0.62));
+  }
   $('#btnHostShell').onclick = () => openHostShell();
 
   // 镜像

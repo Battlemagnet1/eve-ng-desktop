@@ -1,0 +1,488 @@
+# -*- coding: utf-8 -*-
+"""图形控制台（HTML5 / Guacamole）独立窗口。
+
+为什么要有这个模块
+------------------
+图形控制台原来只能塞在底部 dock 的 iframe 里，高度固定 300px，Linux 桌面
+1024x768 挤进去只剩一条缝，既看不清也没法好好操作。
+
+这里给它开一个**独立的原生窗口**：
+
+* 尺寸按屏幕工作区的 92% 算（150% 缩放的笔记本也不会跑到屏幕外），
+  可以自由缩放、最大化，F11 全屏；
+* 窗口里直接加载 EVE 的 Guacamole 页面（不是 iframe），所以鼠标、键盘、
+  滚轮、剪贴板都是浏览器原生行为；
+* 额外注入一小段脚本，把「Windows 剪贴板 → 虚拟机剪贴板」做成
+  一个按钮 + Ctrl+Alt+V，不用记 Guacamole 的 Ctrl+Alt+Shift 面板。
+
+为什么要注入而不是直接靠浏览器剪贴板
+------------------------------------
+Guacamole 的粘贴是「先把文本传到远端剪贴板，再在虚拟机里按 Ctrl+V」，
+中间那个文本框在侧边菜单里，而且菜单是 ng-if 渲染的 —— 不打开菜单，
+DOM 里连 textarea 都没有。WebView2 里 navigator.clipboard 读权限又常被拒，
+所以走本地服务读 Windows 剪贴板（core.clip），再用 JS 把文本写进那个
+textarea 并触发 input 事件（Guacamole 的指令就是监听 input/change 的），
+效果等同于用户手动粘贴。
+
+自签证书不用管：WebView2 的 SPKI 白名单是进程级环境变量，主窗口和这个
+窗口共用同一个 WebView2 环境（见 core/h5trust.py）。
+"""
+import os
+import threading
+import time
+import urllib.parse
+
+from . import clip
+
+# 注入到 EVE 页面里的脚本（纯 ES5，兼容性优先；带 __eveH5 幂等标记）
+_JS = r"""
+(function () {
+  if (window.__eveH5) { return; }
+  window.__eveH5 = { v: 1 };
+
+  function bridge() { return (window.pywebview && window.pywebview.api) || null; }
+
+  /* ---------- 轻提示（不依赖页面自己的样式） ---------- */
+  function toast(msg, bad) {
+    var id = '__eve_h5_toast', t = document.getElementById(id);
+    if (!t) {
+      t = document.createElement('div');
+      t.id = id;
+      t.style.cssText = 'position:fixed;left:50%;bottom:76px;transform:translateX(-50%);'
+        + 'z-index:2147483647;background:rgba(22,24,30,.94);color:#fff;'
+        + 'font:13px/1.5 "Segoe UI",system-ui,sans-serif;padding:9px 15px;border-radius:8px;'
+        + 'box-shadow:0 10px 28px rgba(0,0,0,.45);opacity:0;transition:opacity .18s;'
+        + 'pointer-events:none;max-width:72vw;text-align:center;white-space:pre-line';
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.background = bad ? 'rgba(150,38,38,.96)' : 'rgba(22,24,30,.94)';
+    t.style.opacity = '1';
+    clearTimeout(window.__eveH5.tt);
+    window.__eveH5.tt = setTimeout(function () { t.style.opacity = '0'; }, bad ? 4200 : 2600);
+  }
+
+  /* ---------- 悬浮工具条 ---------- */
+  function bar() {
+    var b = document.getElementById('__eve_h5_bar');
+    if (b) { return b; }
+    b = document.createElement('div');
+    b.id = '__eve_h5_bar';
+    b.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:2147483646;display:flex;'
+      + 'gap:6px;align-items:center;background:rgba(22,24,30,.72);padding:5px 6px;'
+      + 'border-radius:9px;border:1px solid rgba(255,255,255,.14);opacity:.35;'
+      + 'transition:opacity .15s;backdrop-filter:blur(3px);'
+      + 'font:12px/1 "Segoe UI",system-ui,sans-serif;user-select:none';
+    b.onmouseenter = function () { b.style.opacity = '1'; };
+    b.onmouseleave = function () { b.style.opacity = '.35'; };
+
+    function btn(text, tip, fn) {
+      var x = document.createElement('button');
+      x.textContent = text;
+      x.title = tip;
+      x.style.cssText = 'background:rgba(255,255,255,.1);color:#e8eaee;border:0;'
+        + 'border-radius:6px;padding:6px 10px;font:12px/1 "Segoe UI",system-ui,sans-serif;'
+        + 'cursor:pointer';
+      x.onmouseenter = function () { x.style.background = 'rgba(255,255,255,.22)'; };
+      x.onmouseleave = function () { x.style.background = 'rgba(255,255,255,.1)'; };
+      x.onclick = function (e) { e.preventDefault(); fn(); };
+      b.appendChild(x);
+      return x;
+    }
+
+    btn('粘贴', '把 Windows 剪贴板送进虚拟机剪贴板（Ctrl+Alt+V）', doPaste);
+    btn('全屏', '切换全屏（F11）', fullscreen);
+    btn('×', '隐藏这个工具条（下次打开窗口还在）', function () { b.remove(); });
+    document.body.appendChild(b);
+    return b;
+  }
+
+  /* ---------- Guacamole 剪贴板写入 ----------
+     Guacamole 的侧边菜单是 ng-if 渲染的：菜单没打开时 DOM 里没有
+     textarea.clipboard。所以先想办法把菜单打开，再往 textarea 里写值，
+     最后派发 input 事件（guacClipboard 指令监听的就是 input/change）。   */
+
+  function menuScope() {
+    try {
+      var el = document.getElementById('guac-menu');
+      if (!el || !window.angular) { return null; }
+      var sc = window.angular.element(el).scope();
+      return sc && sc.menu ? sc : null;
+    } catch (e) { return null; }
+  }
+
+  function openMenu() {
+    var sc = menuScope();
+    if (sc) {
+      try {
+        sc.$apply(function () { sc.menu.shown = true; });
+        return true;
+      } catch (e) { /* 落到合成按键 */ }
+    }
+    // 兜底：Guacamole 的菜单快捷键 Ctrl+Alt+Shift
+    try {
+      [17, 18, 16].forEach(function (code) {
+        document.dispatchEvent(new KeyboardEvent('keydown', {
+          key: code === 17 ? 'Control' : code === 18 ? 'Alt' : 'Shift',
+          keyCode: code, which: code, bubbles: true, cancelable: true,
+          ctrlKey: true, altKey: true, shiftKey: true
+        }));
+      });
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function writeClipboard(text, cb) {
+    var tries = 0;
+    (function loop() {
+      var ta = document.querySelector('textarea.clipboard') || document.querySelector('.clipboard');
+      if (ta) {
+        try {
+          ta.disabled = false;
+          ta.value = text;
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          ta.dispatchEvent(new Event('change', { bubbles: true }));
+          cb(true);
+          return;
+        } catch (e) { /* 继续重试 */ }
+      }
+      if (++tries > 25) { cb(false); return; }
+      setTimeout(loop, 120);
+    })();
+  }
+
+  /* ---------- 动作 ---------- */
+  function doPaste() {
+    var api = bridge();
+    if (!api || !api.paste) {
+      toast('本地服务还没就绪，稍等一秒再试（或按 Ctrl+Alt+Shift 用 Guacamole 自带的剪贴板面板）', true);
+      return;
+    }
+    api.paste().then(function (r) {
+      var text = (r && r.text) || '';
+      if (!text) { toast('Windows 剪贴板里没有文本'); return; }
+      openMenu();
+      writeClipboard(text, function (ok) {
+        if (ok) {
+          toast('已送入虚拟机剪贴板（' + text.length + ' 字符）\n在虚拟机里按 Ctrl+Shift+V / Shift+Insert 粘贴');
+        } else {
+          toast('没找到 Guacamole 的剪贴板面板。\n按 Ctrl+Alt+Shift 打开侧边菜单，再点「粘贴」重试', true);
+        }
+      });
+    }).catch(function (e) { toast('读取 Windows 剪贴板失败：' + e, true); });
+  }
+
+  function fullscreen() {
+    var api = bridge();
+    if (api && api.fullscreen) { api.fullscreen().catch(function () {}); }
+  }
+
+  /* ---------- 快捷键（捕获阶段，先于 Guacamole 自己的键盘处理） ---------- */
+  document.addEventListener('keydown', function (ev) {
+    if (ev.defaultPrevented) { return; }
+    var k = (ev.key || '').toLowerCase();
+    if (ev.ctrlKey && ev.altKey && !ev.shiftKey && k === 'v') {
+      ev.preventDefault(); ev.stopPropagation(); doPaste(); return;
+    }
+    if (k === 'f11') { ev.preventDefault(); ev.stopPropagation(); fullscreen(); }
+  }, true);
+
+  /* ---------- 启动 ---------- */
+  window.__eveH5.paste = doPaste;      // 排错/自动化用得到
+  window.__eveH5.bar = bar;
+  window.__eveH5.fullscreen = fullscreen;
+  function boot() { try { bar(); } catch (e) {} }
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    setTimeout(boot, 60);
+  } else {
+    document.addEventListener('DOMContentLoaded', boot);
+  }
+  // SPA 切页可能把 body 换掉，隔一会儿补一次（bar() 幂等）
+  setInterval(function () {
+    if (!document.getElementById('__eve_h5_bar')) { try { bar(); } catch (e) {} }
+  }, 4000);
+})();
+"""
+
+
+class _Bridge:
+    """暴露给页面脚本的极小 API（window.pywebview.api.*）。
+
+    **所有属性都必须以下划线开头**：pywebview 生成桥的时候会用 `dir()` 把
+    api 对象的公开属性递归遍历一遍（util.inject_pywebview），而 Window.native
+    是 WinForms 的 COM 对象，能无限往下钻 —— 现象就是日志刷屏
+    `win.native.AccessibilityObject.Bounds.Empty.Empty...` 直到递归上限，
+    UI 线程被占死，页面停在白屏、`window.pywebview` 也永远不出现。
+    """
+
+    def __init__(self, win=None):
+        self._win = win
+
+    def paste(self):
+        """读 Windows 剪贴板，交给注入脚本写进远端剪贴板。"""
+        try:
+            text = clip.get_text() or ""
+        except Exception:
+            text = ""
+        return {"text": text, "len": len(text)}
+
+    def copy(self, text=""):
+        try:
+            return bool(clip.set_text(text or ""))
+        except Exception:
+            return False
+
+    def fullscreen(self):
+        try:
+            self._win.toggle_fullscreen()
+        except Exception:
+            return False
+        return True
+
+    def close(self):
+        try:
+            self._win.destroy()
+        except Exception:
+            pass
+        return True
+
+
+_hooks_done = False
+
+
+def install_webview_hooks():
+    """让 WebView2 直接放行剪贴板权限，别弹「想查看剪贴板」的授权框。
+
+    Guacamole 连上之后会调 `navigator.clipboard.readText()` 做一次
+    「本地剪贴板 → 远端」同步，WebView2 默认会弹一个系统授权条：
+    不点它页面就不往下走，看着就像「控制台打不开」。
+
+    pywebview 6 没有处理 CoreWebView2.PermissionRequested，这里在它
+    `on_webview_ready`（CoreWebView2 初始化完成）之后补一个处理函数，
+    只对剪贴板放行，其它权限保持默认（该弹还是弹）。
+    """
+    global _hooks_done
+    if _hooks_done:
+        return True
+    try:
+        import webview.platforms.edgechromium as ec
+    except Exception:
+        return False
+    orig = ec.EdgeChrome.on_webview_ready
+
+    def patched(self, sender, args):
+        orig(self, sender, args)
+        try:
+            from Microsoft.Web.WebView2.Core import CoreWebView2PermissionState
+
+            def on_perm(_s, ev):
+                try:
+                    if "clipboard" in str(ev.PermissionKind).lower():
+                        ev.State = CoreWebView2PermissionState.Allow
+                except Exception:
+                    pass
+
+            sender.CoreWebView2.PermissionRequested += on_perm
+        except Exception as e:
+            print("[eve-desktop] 剪贴板权限放行没挂上：%s" % e, flush=True)
+
+    ec.EdgeChrome.on_webview_ready = patched
+    _hooks_done = True
+    return True
+
+
+def workarea():
+    """屏幕工作区（去掉任务栏）的宽高；取不到就给个保守值。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        r = wintypes.RECT()
+        if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):
+            w, h = r.right - r.left, r.bottom - r.top
+            if w > 640 and h > 480:
+                return w, h
+    except Exception:
+        pass
+    return 1366, 768
+
+
+def _ascii_title(s):
+    """窗口标题只留 ASCII。
+
+    中文标题在某些 Windows 代码页下会变成乱码（主窗口当初就踩过，
+    注释见 app.py），节点名基本都是 Linux/R1 这种，够用。
+    """
+    out = "".join(c if 32 <= ord(c) < 127 else "?" for c in (s or "")).strip()
+    return out or "EVE Console"
+
+
+class ConsoleWindows:
+    """管理弹出式图形控制台窗口（同一 URL 只开一个）。"""
+
+    def __init__(self, cfg=None, log=None):
+        self.cfg = cfg
+        self.log = log or (lambda *a, **k: None)
+        self._wins = {}
+        self._lock = threading.Lock()
+
+    # ---------- 尺寸 ----------
+    def _size(self):
+        aw, ah = workarea()
+        w, h = int(aw * 0.92), int(ah * 0.92)
+        saved = {}
+        try:
+            saved = (self.cfg.data.get("h5win") or {}) if self.cfg else {}
+        except Exception:
+            saved = {}
+        try:
+            sw, sh = int(saved.get("w") or 0), int(saved.get("h") or 0)
+        except Exception:
+            sw = sh = 0
+        if sw > 640 and sh > 400:
+            w, h = min(sw, aw), min(sh, ah)
+        w = max(760, min(w, aw))
+        h = max(480, min(h, ah))
+        x = max(0, (aw - w) // 2)
+        y = max(0, (ah - h) // 2)
+        return w, h, x, y
+
+    def _remember(self, win):
+        """把用户拖出来的大小记进配置，下次照这个开。"""
+        try:
+            w, h = int(win.width or 0), int(win.height or 0)
+            if w > 640 and h > 400 and self.cfg:
+                self.cfg.data["h5win"] = {"w": w, "h": h}
+                self.cfg.save()
+        except Exception:
+            pass
+
+    # ---------- 打开 ----------
+    def open(self, url, title=""):
+        """在独立窗口里打开图形控制台。
+
+        返回 {"mode": "window" | "browser", ...}；调用方据此提示用户。
+        """
+        url = (url or "").strip()
+        if not url:
+            raise ValueError("缺少控制台地址")
+        try:
+            import webview
+        except ImportError:
+            return self._browser(url, "没装 pywebview，改用系统浏览器打开")
+        install_webview_hooks()
+
+        with self._lock:
+            win = self._wins.get(url)
+            alive = False
+            if win is not None:
+                try:
+                    win.show()
+                    win.on_top(True)
+                    win.on_top(False)
+                    alive = True
+                except Exception:
+                    alive = False
+                if alive:
+                    return {"mode": "window", "reused": True}
+
+            w, h, x, y = self._size()
+            bridge = _Bridge()
+            try:
+                win = webview.create_window(
+                    _ascii_title(title),
+                    url,
+                    js_api=bridge,
+                    width=w, height=h, x=x, y=y,
+                    min_size=(760, 480),
+                    text_select=True,
+                    confirm_close=False,
+                )
+            except Exception as e:
+                return self._browser(url, "开独立窗口失败（%s）" % e)
+            if win is None:
+                return self._browser(url, "开独立窗口失败")
+
+            bridge._win = win
+            self._wins[url] = win
+            threading.Thread(target=self._inject_later, args=(win,), daemon=True).start()
+            self.log("已在新窗口打开图形控制台：%s" % title)
+
+        return {"mode": "window", "size": [w, h]}
+
+    def _inject(self, win):
+        try:
+            win.evaluate_js(_JS)
+            return True
+        except Exception as e:
+            self.log("控制台窗口注入脚本失败：%s" % e, "warn")
+            return False
+
+    def _inject_later(self, win):
+        """在后台线程里注入。
+
+        **不能**在 pywebview 的事件回调（loaded 等）里调 evaluate_js：
+        那些回调跑在 WinForms 的 UI 线程上，而 evaluate_js 会 Invoke 回 UI
+        线程再等一个信号量 —— 直接死锁，现象就是窗口一片黑、整个窗口点不动。
+        所以这里用独立线程轮询着注入，脚本自身幂等（重复执行不会叠工具条）。
+        """
+        ok = False
+        for delay in (1.2, 2.5, 4.0, 7.0, 10.0):
+            time.sleep(delay)
+            try:
+                if win.evaluate_js("!!window.__eveH5"):
+                    ok = True
+                    break
+                if self._inject(win) and win.evaluate_js("!!window.__eveH5"):
+                    ok = True
+                    break
+            except Exception:
+                continue          # 还在导航 / 窗口已关，下一轮再说
+        self.log("控制台窗口脚本注入%s" % ("成功（粘贴按钮可用）" if ok
+                                          else "失败：用 Ctrl+Alt+Shift 打开 Guacamole 剪贴板面板"),
+                 "info" if ok else "warn")
+        try:
+            self._remember(win)
+            win.events.closed += lambda *a: self._forget(win)
+        except Exception:
+            pass
+
+    def _forget(self, win):
+        with self._lock:
+            for k, v in list(self._wins.items()):
+                if v is win:
+                    self._wins.pop(k, None)
+
+    def _browser(self, url, why):
+        """开不出原生窗口就退回系统浏览器 —— 功能不缺，只是少了个窗口壳。"""
+        try:
+            import webbrowser
+
+            webbrowser.open(url)
+        except Exception as e:
+            raise ValueError(why + "，且无法调用系统浏览器：%s" % e)
+        return {"mode": "browser", "why": why}
+
+    # ---------- 证书提示 ----------
+    @staticmethod
+    def cert_state(url):
+        """https 控制台的证书是否已经进了 WebView2 白名单。
+
+        返回 (是否需要提醒, 说明)。白名单是进程启动时定死的，连上服务器后才
+        发现的证书要重启客户端才生效 —— 与其让用户对着白屏猜，不如提前说。
+        """
+        try:
+            u = urllib.parse.urlparse(url)
+        except Exception:
+            return False, ""
+        if (u.scheme or "").lower() != "https" or not u.hostname:
+            return False, ""
+        try:
+            from . import h5trust
+
+            h = h5trust.spki_hash(u.hostname, u.port or 443)
+            if h and h not in h5trust.current_hashes():
+                return True, "这台服务器的自签证书本次未放行，控制台可能白屏；重启客户端后生效"
+        except Exception:
+            pass
+        return False, ""

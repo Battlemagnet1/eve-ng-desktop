@@ -14,6 +14,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import server  # noqa: E402
+from core import h5win  # noqa: E402
 from core.config import Config, app_dir  # noqa: E402
 
 
@@ -24,18 +25,9 @@ def _fit_size(w, h):
     （实测 882），默认 920 高的窗口下半截会跑到屏幕外面去 —— 抓包面板这类
     贴底的元素就永远看不见。这里按工作区的 96% 收一下。
     """
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        u = ctypes.windll.user32
-        r = wintypes.RECT()
-        if u.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):   # SPI_GETWORKAREA
-            aw, ah = r.right - r.left, r.bottom - r.top
-            if aw > 600 and ah > 400:
-                return min(w, int(aw * 0.96)), min(h, int(ah * 0.96))
-    except Exception:
-        pass
+    aw, ah = h5win.workarea()
+    if aw > 600 and ah > 400:
+        return min(w, int(aw * 0.96)), min(h, int(ah * 0.96))
     return w, h
 
 
@@ -105,6 +97,11 @@ def main():
         except KeyboardInterrupt:
             pass
         return
+
+    # 图形控制台（HTML5/VNC）可以单独开一个原生窗口：dock 里的 iframe 只有
+    # 300px 高，Linux 桌面根本看不清。这里把「开窗」能力挂到业务层，
+    # 由 /api/console/window 触发（core/h5win.py）。
+    app.h5win = h5win.ConsoleWindows(cfg, app.log)
 
     win_w, win_h = _fit_size(1480, 920)
     webview.create_window(

@@ -45,6 +45,7 @@ class App:
         self.caps = capture.Manager()
         self.logs = []
         self.debug = False          # --debug：把每个本地接口调用打到控制台，方便排错
+        self.h5win = None           # 图形控制台独立窗口（只有图形版启动时才注入）
         self._lock = threading.RLock()
 
     # ---------- 日志 ----------
@@ -424,6 +425,41 @@ class App:
                 or os.path.join(os.path.expanduser("~"), "Documents", "eve-captures"))
 
 
+    # ---------- 图形控制台窗口 ----------
+    def open_console_window(self, url, title=""):
+        """把 HTML5 图形控制台开成独立窗口（大、能缩放、能粘贴）。
+
+        只允许打开「当前连接的这台服务器」的控制台：本地服务虽然只绑
+        127.0.0.1，也没必要让它变成一个任意 URL 打开器。
+        """
+        url = (url or "").strip()
+        if not url:
+            raise EveError("该节点没有图形控制台地址")
+        if not url.startswith("http"):
+            eve = self.require()
+            url = eve.base().rstrip("/") + "/" + url.lstrip("/")
+        host = self.info.get("host")
+        try:
+            uh = urllib.parse.urlparse(url).hostname
+        except Exception:
+            uh = None
+        if host and uh and uh != host:
+            raise EveError("这个控制台地址不属于当前服务器（%s ≠ %s）" % (uh, host))
+        if self.h5win is None:
+            raise EveError("当前是「仅服务」模式：请在浏览器里打开，或直接启动图形版")
+        warn = ""
+        try:
+            from . import h5win as _h5
+
+            need, why = _h5.ConsoleWindows.cert_state(url)
+            if need:
+                warn = why
+        except Exception:
+            pass
+        res = self.h5win.open(url, title or "EVE Console")
+        res["warn"] = warn
+        return res
+
     # ---------- 终端 ----------
     def _tpl_arch(self):
         return (self.info.get("ident") or {}).get("tpl_arch") or "intel"
@@ -744,6 +780,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, **netcfg.lab_tap_cleanup(
                 a.remote, a.eve.caps.get("tenant") or 0,
                 a.eve.lab_nodes(_req(body, "path", "实验路径")))})
+        if path == "/api/console/window":
+            return self._json({"ok": True, **a.open_console_window(
+                _req(body, "url", "控制台地址"), body.get("title") or "")})
         if path == "/api/term/open":
             kind = body.get("kind") or "node"
             if kind == "node":
