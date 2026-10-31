@@ -146,6 +146,10 @@ async function boot() {
   try {
     let st = await api('/api/state');
     S.info = st.info && st.info.host ? st.info : null;
+    // 设置页先填好再等连接：自动连接可能要等几秒，别让用户在这个空档
+    // 看到「80 / HTTP」这种默认值，误以为配置丢了（连 Pro 时尤其误导）。
+    S.profiles = st.profiles || [];
+    renderProfiles(st.active);
     // 启动时的「自动连接」在后台线程里跑，页面往往比它先就绪 —— 等一会儿，
     // 否则用户看到的是「未连接」然后一直不动（旧版本就卡在这儿）。
     for (let i = 0; !S.info && i < 20; i++) {
@@ -153,9 +157,7 @@ async function boot() {
       st = await api('/api/state');
       S.info = st.info && st.info.host ? st.info : null;
     }
-    S.profiles = st.profiles || [];
     renderConn();
-    renderProfiles(st.active);
     renderLogs(st.logs);
     if (S.info) { await loadLabs(''); }
     else { $('#labTree').innerHTML = '<div class="empty">请到「设置」填写服务器并连接</div>'; }
@@ -1519,6 +1521,8 @@ function fillForm(p) {
   ['name', 'host', 'api_port', 'eve_user', 'ssh_user', 'ssh_port'].forEach(k => {
     if (f[k]) f[k].value = p[k] == null ? '' : p[k];
   });
+  // 老配置里没有 scheme 字段：按端口猜（443 基本就是 HTTPS）
+  if (f.scheme) f.scheme.value = p.scheme || (Number(p.api_port) === 443 ? 'https' : 'http');
   f.eve_pass.value = '';
   f.ssh_pass.value = '';
   f.use_ssh.checked = p.use_ssh !== false;
@@ -2142,13 +2146,25 @@ function bind() {
     const p = S.profiles.find(x => x.id === e.target.value);
     if (p) fillForm(p);
   };
+  // 端口和协议联动：填 443 基本就是 HTTPS，填 80 就是 HTTP（其它端口保持用户选择）
+  const portEl = $('#profForm').api_port;
+  if (portEl) {
+    portEl.onchange = () => {
+      const sc = $('#profForm').scheme;
+      if (!sc) return;
+      const n = Number(portEl.value);
+      if (n === 443 || n === 8443) sc.value = 'https';
+      else if (n === 80) sc.value = 'http';
+    };
+  }
   $('#profForm').onsubmit = async e => {
     e.preventDefault();
     const f = e.target;
     const payload = {
       id: f.dataset.id || '',
       name: f.name.value, host: f.host.value.trim(),
-      api_port: Number(f.api_port.value) || 80, scheme: 'http',
+      api_port: Number(f.api_port.value) || 80,
+      scheme: (f.scheme && f.scheme.value) || 'http',
       eve_user: f.eve_user.value, eve_pass: f.eve_pass.value,
       use_ssh: f.use_ssh.checked, ssh_user: f.ssh_user.value,
       ssh_port: Number(f.ssh_port.value) || 22, ssh_pass: f.ssh_pass.value,

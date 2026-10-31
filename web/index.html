@@ -159,6 +159,12 @@
           <label>服务器地址 <input name="host" placeholder="192.168.1.10" required></label>
           <label>API 端口 <input name="api_port" type="number" value="80"></label>
         </div>
+        <label>连接协议
+          <select name="scheme">
+            <option value="http">HTTP（旧版 EVE，端口一般 80）</option>
+            <option value="https">HTTPS（新版 EVE Pro，端口一般 443）</option>
+          </select>
+        </label>
         <div class="grid2">
           <label>EVE 账号 <input name="eve_user" value="admin" autocomplete="username"></label>
           <label>EVE 密码 <input name="eve_pass" type="password" autocomplete="current-password" placeholder="留空表示不修改"></label>

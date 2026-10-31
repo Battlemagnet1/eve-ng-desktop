@@ -65,10 +65,32 @@ class App:
         if not (p.get("eve_pass") or "").strip():
             raise EveError("还没保存 EVE 密码：请在「连接设置」里填写账号密码后重试")
         self.disconnect()
-        sess = EveSession(host, p.get("api_port") or 80, p.get("scheme") or "http")
-        sess.login(p.get("eve_user") or "admin", p.get("eve_pass") or "")
+        port = int(p.get("api_port") or 80)
+        scheme = (p.get("scheme") or "").strip().lower()
+        if scheme not in ("http", "https"):
+            # 老配置没有这个字段：443 就是 HTTPS（新版 EVE Pro 的默认）
+            scheme = "https" if port in (443, 8443) else "http"
+        # 协议填错是致命错误，但改起来很烦（尤其升级到 Pro 之后）。
+        # 这里按「先按配置/端口猜，失败再换另一种」自动试探，成功了就把
+        # 结果写回配置，下次直接用对的那个。
+        sess, last = None, None
+        for sc in [scheme] + [x for x in ("https", "http") if x != scheme]:
+            cand = EveSession(host, port, sc)
+            try:
+                cand.login(p.get("eve_user") or "admin", p.get("eve_pass") or "")
+            except EveError as e:
+                last = e
+                self.log("用 %s 连接 %s:%s 失败，换一种协议再试：%s"
+                         % (sc.upper(), host, port, e), "warn")
+                continue
+            sess, scheme = cand, sc
+            if sc != (p.get("scheme") or "").strip().lower():
+                self._remember_scheme(p.get("id"), sc)
+            break
+        if sess is None:
+            raise last or EveError("连接失败")
         info = {
-            "host": host, "port": int(p.get("api_port") or 80), "scheme": p.get("scheme"),
+            "host": host, "port": port, "scheme": scheme,
             "version": sess.version, "caps": sess.caps,
             "user": p.get("eve_user"), "profile": p.get("id"),
             "ssh": False, "ssh_error": "", "ident": {}, "tools": {},
@@ -89,6 +111,20 @@ class App:
         self.log("已连接 %s（EVE %s%s）" % (host, sess.version,
                                            " · SSH 可用" if info["ssh"] else " · 仅 API"))
         return info
+
+    def _remember_scheme(self, pid, scheme):
+        """把探到的协议写回配置，下次连接就不用再试错了。"""
+        try:
+            pid = pid or self.cfg.data.get("active")
+            for q in self.cfg.data.get("profiles", []):
+                if q.get("id") == pid:
+                    if q.get("scheme") != scheme:
+                        q["scheme"] = scheme
+                        self.cfg.save()
+                        self.log("已记住 %s 使用 %s" % (q.get("host") or "", scheme.upper()))
+                    return
+        except Exception as e:
+            self.log("保存协议设置失败（不影响本次连接）：%s" % e, "warn")
 
     def disconnect(self):
         self.terms.close_all()
