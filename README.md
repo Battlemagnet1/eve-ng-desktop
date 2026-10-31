@@ -113,13 +113,19 @@ pyinstaller -w -n "EVE Desktop" ^
 ## 打安装包（开发用）
 
 ```bash
-installer\build-installer.bat        # 仓库根目录运行
+installer\build-installer.bat        # 在哪个目录运行都行，脚本自己找 venv
 ```
 
 两步：PyInstaller 打出 `dist/EVE-Desktop/`（`EVE-Desktop.spec`），再由
 Inno Setup 6.3+（`installer/EVE-Desktop.iss`）压成安装包。Wireshark 不打进包，
 安装时按勾选从官方镜像在线下载静默安装（`Wireshark-latest-x64.exe` 永久直链，
 双镜像容错）。中文界面用 `installer/ChineseSimplified.isl`（官方仓库 Unofficial 翻译）。
+
+打包脚本会先确认用的是**项目 venv**（缺 `paramiko` 或 `pywebview` 直接报错，不会偷偷
+退回系统 python），打完再跑 `installer/smoke_test.py`：以 `--no-gui` 起一次 exe，
+等 `/api/state` 应答。纯 Python 依赖是打进 PYZ 归档的，`_internal` 里根本没有
+`paramiko` 目录，所以「看文件在不在」判断不了依赖是否打全 —— **必须真跑一次**。
+漏了这步，出来的包双击就是 `ModuleNotFoundError: paramiko`。
 
 ## 自测（开发用）
 
