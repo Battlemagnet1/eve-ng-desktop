@@ -372,11 +372,18 @@ class EveSession:
         """
         cur = self.node_interfaces(path, nid) or {}
         eth = cur.get("ethernet") or {}
+        # 接口名有两套：EVE 内部名（e0、e0/1）和厂商真名（Gi0/0、Ethernet0/1）。
+        # 界面上显示/传的是内部名，而 CE 的 ethernet 里只有厂商名，直接按名字查
+        # 会查不到——曾经因此「接线看着成功、实际一根线都没接」（CE 6.2 实测）。
+        # 这里给每个接口多挂几个别名，内部名按**顺序**换算，两套都能命中。
+        order = sorted(eth.keys(), key=lambda k: int(k) if str(k).isdigit() else 1 << 30)
         by_name = {}
-        for iid, v in eth.items():
-            nm = (v or {}).get("name")
+        for idx, iid in enumerate(order):
+            nm = (eth.get(iid) or {}).get("name")
             if nm:
                 by_name[str(nm)] = str(iid)
+            by_name["e%d" % idx] = str(iid)        # e0、e1…
+            by_name["e0/%d" % idx] = str(iid)      # e0/0、e0/1…
 
         if isinstance(ifaces, dict):
             items = list(ifaces.items())
@@ -391,7 +398,12 @@ class EveSession:
                 continue                     # 名字对不上就跳过，不瞎写
             body[iid] = "" if net in (None, "", 0, "0") else str(net)
         if not body:
-            return None
+            # 一个都没匹配上就别当成功返回，否则上层会以为接好了
+            want = [str((x or {}).get("name") or (x or {}).get("id"))
+                    if isinstance(x, dict) else str(x) for x in items]
+            have = [str((eth.get(i) or {}).get("name") or i) for i in order]
+            raise EveError("接口 %s 不存在（这个节点有：%s）"
+                           % ("、".join(want), "、".join(have)))
         return self.put("/api/labs/%s/nodes/%s/interfaces" % (_q(path), nid), body)
 
     def add_network(self, path, net):

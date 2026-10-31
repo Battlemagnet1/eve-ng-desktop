@@ -318,6 +318,14 @@ class App:
                 eve.edit_network(path, net_id, {"visibility": 0})
             except EveError:
                 pass    # 改不了也只是 EVE 网页版多个图标，不影响接线本身
+        # 结果复核：EVE 对「接口名不认识」是静默忽略的，HTTP 照样 200。
+        # 必须看网络上的接口数真的变成 2，否则界面上会出现「点了接线没线」。
+        try:
+            cnt = int(((eve.lab_networks(path) or {}).get(str(net_id)) or {}).get("count") or 0)
+        except (TypeError, ValueError):
+            cnt = 0
+        if cnt < 2:
+            raise EveError("接线没生效：网络 %s 上只挂了 %d 个接口（应为 2）" % (net_id, cnt))
         self.log("接线 %s:%s ─ %s:%s（网络 %s%s）"
                  % (aid, aif, bid, bif, net_id, "，新建" if created else ""))
         return {"ok": True, "net": int(net_id), "created": created,
