@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 import posixpath
+import re
 import tempfile
 import threading
 import time
@@ -109,6 +110,33 @@ class App:
         return self.eve
 
     # ---------- 实验 ----------
+    def create_lab(self, folder="", name="", description=""):
+        """新建空实验。
+
+        EVE 的 POST /api/labs 要求 `path`（所在目录）和 `name`（**不带 .unl**，
+        带了自己会再补一个变成 x.unl.unl）。CE 6.x 与 Pro 7.x 语义一致。
+        返回新实验的相对路径，前端据此直接打开。
+        """
+        eve = self.require()
+        name = (name or "").strip()
+        if not name:
+            raise EveError("请填实验名")
+        if name.lower().endswith(".unl"):
+            name = name[:-4]
+        if "/" in name or "\\" in name:
+            raise EveError("实验名里不能带斜杠")
+        folder = (folder or "").strip("/")
+        eve.post("/api/labs", {
+            "path": "/" + folder if folder else "/",
+            "name": name,
+            "version": "1",
+            "author": "",
+            "description": (description or "").strip(),
+        })
+        path = (folder + "/" + name + ".unl").lstrip("/")
+        self.log("新建实验 %s" % path)
+        return {"path": path, "name": name, "folder": folder}
+
     def labs(self, path=""):
         eve = self.require()
         data = eve.list_labs(path)
@@ -333,6 +361,37 @@ class App:
     def _tpl_arch(self):
         return (self.info.get("ident") or {}).get("tpl_arch") or "intel"
 
+    # Pro 7.x 起节点时给控制台分配**随机端口**（不走 32768+id），API 也不返回，
+    # 只能从服务器上的 wrapper 进程参数里读：`qemu_wrapper -C <端口> -D <节点id>`，
+    # 而它的工作目录正好是 `/opt/unetlab/tmp/<tenant>/<实验uuid>/<节点id>`，
+    # 所以「实验 uuid + 节点 id」就能唯一定位到端口。
+    CONSOLE_PORT_CMD = (
+        "ps -eo pid,args | grep -E '(qemu|iol|dynamips|docker)_wrapper' | grep -v grep | "
+        "while read -r pid rest; do cwd=$(readlink /proc/$pid/cwd 2>/dev/null) || continue; "
+        "echo \"$cwd|$rest\"; done")
+
+    def _console_port(self, eve, path, nid):
+        """节点控制台端口：CE 用公式，Pro 去服务器上现查（查不到再退回公式）。"""
+        fallback = eve.console_port(nid)
+        if not (self.info.get("caps") or {}).get("pro") or self.remote is None:
+            return fallback
+        try:
+            uuid = str((eve.lab_meta(path) or {}).get("id") or "")
+            if not uuid:
+                return fallback
+            _rc, out, _err = self.remote.run(self.CONSOLE_PORT_CMD, timeout=20)
+            tail = "/" + str(nid)
+            for line in (out or "").splitlines():
+                cwd, _sep, args = line.partition("|")
+                if uuid not in cwd or not cwd.rstrip("/").endswith(tail):
+                    continue
+                m = re.search(r"-C\s+(\d+)", args)
+                if m:
+                    return int(m.group(1))
+        except Exception as e:
+            self.log("查 Pro 控制台端口失败（退回公式 %s）：%s" % (fallback, e), "warn")
+        return fallback
+
     def open_terminal(self, path=None, nid=None, kind="node", cols=120, rows=32):
         eve = self.require()
         if kind == "host":
@@ -347,7 +406,7 @@ class App:
             self.log("打开主机终端 %s" % sess.sid)
             return {"sid": sess.sid, "title": sess.title}
 
-        port = eve.console_port(nid)
+        port = self._console_port(eve, path, nid)
         title = "node-%s" % nid
         try:
             node = eve.node(path, nid) or {}
@@ -552,6 +611,10 @@ class Handler(BaseHTTPRequestHandler):
                               _req(body, "action", "动作"))
             return self._json({"ok": True})
         # ---------- 拓扑编辑 ----------
+        if path == "/api/lab/new":
+            return self._json({"ok": True, **a.create_lab(
+                body.get("folder"), _req(body, "name", "实验名"),
+                body.get("description"))})
         if path == "/api/lab/node":
             return self._json({"ok": True, **a.add_node(
                 _req(body, "path", "实验路径"),

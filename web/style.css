@@ -57,6 +57,7 @@ button{cursor:pointer}
   padding:0 12px;font-size:12px;color:var(--txt2);border-bottom:1px solid var(--line);
   text-transform:uppercase;letter-spacing:.06em;
 }
+.side-btns{display:flex;gap:6px}
 .mini{
   background:transparent;border:1px solid var(--line2);color:var(--txt2);
   border-radius:5px;padding:2px 8px;font-size:11px;
@@ -123,6 +124,13 @@ button{cursor:pointer}
 .nd-dot{position:absolute;right:-3px;top:-3px;width:9px;height:9px;border-radius:50%;
   background:#475569;border:2px solid var(--panel2)}
 .nd.running .nd-dot{background:var(--ok)}
+/* 可选节点图标：圆形＝路由器，横置长方体＝交换机，竖置长方体＝防火墙（右键/检查器切换） */
+.nd.ico-router .nd-box{width:48px;height:48px;border-radius:50%}
+.nd.ico-router .nd-glyph{font-size:12px}
+.nd.ico-switch .nd-box{width:76px;height:26px;border-radius:5px}
+.nd.ico-switch .nd-glyph{font-size:11px}
+.nd.ico-fw .nd-box{width:34px;height:64px;border-radius:5px}
+.nd.ico-fw .nd-glyph{font-size:10px;line-height:1.15;writing-mode:vertical-rl;text-orientation:upright}
 /* 接口不再在节点右侧竖一列点，改为直接标在链路上（见 app.js addIfaceLabel） */
 .iflabel{font-family:Consolas,"Courier New",monospace;font-weight:600;
   letter-spacing:.2px;user-select:none}

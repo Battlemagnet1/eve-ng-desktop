@@ -218,6 +218,62 @@ function renderLabs() {
   tree.innerHTML = html || '<div class="empty">空目录</div>';
 }
 
+/* 新建空实验：建在当前浏览的目录下，建好直接打开 */
+async function newLab() {
+  if (!S.info) { toast('先连接服务器', 'warn'); return; }
+  const f = await modal('新建实验', [
+    { key: 'name', label: '实验名（自动加 .unl）', type: 'text', value: '' },
+    { key: 'folder', label: '所在目录', type: 'text', value: S.cwd || '', },
+    { key: 'description', label: '说明（可留空）', type: 'text', value: '' },
+  ]);
+  if (!f) return;
+  const name = (f.name || '').trim();
+  if (!name) { toast('实验名不能为空', 'warn'); return; }
+  const r = await api('/api/lab/new', {
+    method: 'POST',
+    body: { name, folder: (f.folder || '').trim(), description: f.description || '' },
+  });
+  toast('已新建实验 ' + r.path, 'ok');
+  await loadLabs(S.cwd);
+  await openLab(r.path);
+}
+
+/* ------------------------------------------------------------------ 节点图标 */
+/* 图标只影响画布上怎么画，不改 EVE 的数据（EVE 的 icon 是服务器上的 SVG 文件，
+   我们这边是自绘节点，所以按「实验 + 节点 id」存在浏览器本地）。
+   三种形状：圆形＝路由器 / 横置长方体＝交换机 / 竖置长方体＝防火墙。*/
+const ICO_PREFIX = 'eve.icons.';
+
+function iconMap() {
+  try { return JSON.parse(localStorage.getItem(ICO_PREFIX + (S.labPath || '')) || '{}'); }
+  catch (e) { return {}; }
+}
+
+function setNodeIcon(ids, shape) {
+  const m = iconMap();
+  (ids || []).forEach(id => { if (shape) m[id] = shape; else delete m[id]; });
+  try { localStorage.setItem(ICO_PREFIX + (S.labPath || ''), JSON.stringify(m)); } catch (e) {}
+  renderTopology();
+}
+
+async function pickIcon(ids) {
+  ids = ids || (S.selIds || []);
+  if (!ids.length) return;
+  const cur = ids.length === 1 ? (iconMap()[ids[0]] || '') : '';
+  const f = await modal('节点图标（' + ids.length + ' 个节点）', [{
+    key: 'shape', label: '图形', type: 'select', value: cur,
+    options: [
+      { value: '', label: '默认（方框）' },
+      { value: 'router', label: '圆形 — 路由器' },
+      { value: 'switch', label: '横置长方体 — 交换机' },
+      { value: 'fw', label: '竖置长方体 — 防火墙' },
+    ],
+  }]);
+  if (!f) return;
+  setNodeIcon(ids, f.shape);
+  toast('图标已更新', 'ok');
+}
+
 /* ------------------------------------------------------------------ 拓扑 */
 async function openLab(path) {
   S.labPath = path;
@@ -334,10 +390,12 @@ function renderTopology() {
   if (!L) return;
 
   const pts = {};
+  const icons = iconMap();            // 每个实验各自的节点图标偏好
   Object.entries(L.nodes || {}).forEach(([id, n]) => {
     pts['node' + id] = { x: Number(n.left || 0), y: Number(n.top || 0), node: n, id };
     const el = document.createElement('div');
-    el.className = 'nd' + (isRunning(n) ? ' running' : '');
+    const shape = icons[id] ? ' ico-' + icons[id] : '';
+    el.className = 'nd' + shape + (isRunning(n) ? ' running' : '');
     el.dataset.id = id;
     el.style.left = (Number(n.left || 0)) + 'px';
     el.style.top = (Number(n.top || 0)) + 'px';
@@ -692,6 +750,7 @@ function renderInspector(d) {
       <button class="btn sm" data-act="term">CLI 控制台</button>
       ${d.html5 ? '<button class="btn sm ghost" data-act="html5">图形控制台</button>' : ''}
       <button class="btn sm ghost" data-act="rename">改名</button>
+      <button class="btn sm ghost" data-act="icon">图标…</button>
       <button class="btn sm ghost" data-act="edit">属性…</button>
       <button class="btn sm ghost" data-act="del">删除节点</button>
     </div>
@@ -722,6 +781,8 @@ function renderInspector(d) {
         openHtml5(d.html5, n.name);
       } else if (act === 'rename') {
         await renameNode(n.id, n.name);
+      } else if (act === 'icon') {
+        await pickIcon([n.id]);
       } else if (act === 'edit') {
         await editNodeProps(n, d);
       } else if (act === 'link') {
@@ -1479,6 +1540,7 @@ function bind() {
   };
 
   $('#btnRefreshLabs').onclick = () => loadLabs(S.cwd).catch(fail);
+  $('#btnNewLab').onclick = () => newLab().catch(fail);
   $('#crumbs').onclick = e => {
     const a = e.target.closest('a[data-p]');
     if (a) loadLabs(a.dataset.p).catch(fail);
@@ -1947,6 +2009,7 @@ function bind() {
         [`启动选中的 ${ids.length} 个`, () => bulkAct(ids, 'start')],
         [`停止选中的 ${ids.length} 个`, () => bulkAct(ids, 'stop')],
         ['批量接线…', () => linkDialog(ids)],
+        ['统一图标…', () => pickIcon(ids)],
         null,
         [`擦除选中的 ${ids.length} 个`, () => bulkAct(ids, 'wipe')],
         [`删除选中的 ${ids.length} 个`, () => bulkAct(ids, 'del')],
@@ -1962,6 +2025,7 @@ function bind() {
       null,
       ['属性（名字 / 内存 / 镜像）…', () => editNodeProps(n, null)],
       ['接线到网络…', () => linkDialog([id])],
+      ['图标…', () => pickIcon([id])],
       ['抓包…', async () => {
         try {
           const d = await api(`/api/node?path=${encodeURIComponent(S.labPath)}&id=${id}`);

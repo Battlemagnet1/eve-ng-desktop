@@ -201,9 +201,12 @@ class EveSession:
         只用 `_soft()`：探测期间的 401/412 不能再触发重登，
         否则会 login → probe → api → login … 无限递归（曾经卡死连接）。
         """
-        caps = {"html5": False, "list_labs": False, "tenant": 0, "ovs": False}
+        caps = {"html5": False, "list_labs": False, "tenant": 0, "ovs": False,
+                "pro": False, "stop_mode": None}
         st = self._soft("/api/status", {}) or {}
         self.version = str(st.get("version") or "")
+        # 7.x 的版本号形如 "7.2.0-4-PRO"；stop 接口在 Pro 上要求 stopmode
+        caps["pro"] = "PRO" in self.version.upper()
         caps["list_labs"] = self._soft("/api/labs") is not None
         try:
             code, _ = self.request("GET", "/html5/", raw=True, timeout=8)
@@ -268,11 +271,48 @@ class EveSession:
         return self.get("/api/labs/%s/nodes/%s" % (_q(path), nid))
 
     def node_interfaces(self, path, nid):
-        return self.get("/api/labs/%s/nodes/%s/interfaces" % (_q(path), nid))
+        """节点网卡。CE 6.x 是 `{槽位ID: {...}}`，Pro 7.x 是数组（无 ID，顺序即编号）。
+
+        这里统一成 CE 的形状（键 = 接口编号字符串），这样接线、抓包、
+        检查器下拉全都按同一套逻辑走，不需要到处判断版本。
+        Pro 的数组第 i 个元素就对应接口编号 i（实测 PUT {"2": "1"} 改的是 e2）。
+        """
+        data = self.get("/api/labs/%s/nodes/%s/interfaces" % (_q(path), nid))
+        if isinstance(data, dict):
+            eth = data.get("ethernet")
+            if isinstance(eth, list):
+                data["ethernet"] = {str(i): it for i, it in enumerate(eth)
+                                    if isinstance(it, dict)}
+        return data
 
     def node_action(self, path, nid, action):
-        """start / stop / wipe / export"""
-        return self.get("/api/labs/%s/nodes/%s/%s" % (_q(path), nid, action))
+        """start / stop / wipe
+
+        Pro 7.x 的 stop 必须带 stopmode（前端 `pn(path,id,3)` →
+        `.../stop/stopmode=3`），不带会 400 `Request not valid (60027)`；
+        CE 6.x 的 `/stop` 直接可用。两种写法都试，谁通了记进 caps，
+        之后的调用不再试错（也有兜底作用：万一版本号判错也能自愈）。
+        """
+        if action != "stop":
+            return self.get("/api/labs/%s/nodes/%s/%s" % (_q(path), nid, action))
+        head = "/api/labs/%s/nodes/%s/stop" % (_q(path), nid)
+        mode = self.caps.get("stop_mode")
+        if mode is None:
+            mode = 3 if self.caps.get("pro") else 0
+        first, second = (head + "/stopmode=3", head) if mode == 3 else (head, head + "/stopmode=3")
+        try:
+            data = self.get(first)
+        except EveError as e:
+            # 换另一种写法再试一次；两种都失败就把**原错误**抛出去，
+            # 免得「节点本来没开」这类业务错误被另一种写法的报错盖住
+            try:
+                data = self.get(second)
+            except EveError:
+                raise e
+            self.caps["stop_mode"] = 0 if first.endswith("/stopmode=3") else 3
+            return data
+        self.caps["stop_mode"] = 3 if first.endswith("/stopmode=3") else 0
+        return data
 
     def lab_action(self, path, action):
         return self.get("/api/labs/%s/nodes/%s" % (_q(path), action))
@@ -365,8 +405,30 @@ class EveSession:
         return self.put("/api/labs/%s/networks/%s" % (_q(path), nid), body)
 
     def delete_network(self, path, nid):
-        """删网络。EVE 会连带把接在上面的网卡断线。"""
-        return self.delete("/api/labs/%s/networks/%s" % (_q(path), nid))
+        """删网络。EVE 会连带把接在上面的网卡断线。
+
+        Pro 7.x 删一个**已经不存在**的网络会回 500（Slim 错误页、非 JSON），
+        不是我们请求写错了。批量删除、或者刚删完节点导致桥自动消失时很容易
+        踩到，所以这里先复核一遍：确实已经没了就当成功，别报假失败。
+        """
+        try:
+            return self.delete("/api/labs/%s/networks/%s" % (_q(path), nid))
+        except EveError:
+            if self._gone(path, "networks", nid):
+                return None
+            raise
+
+    def _gone(self, path, kind, nid):
+        """实体是否已经不在实验里了（kind = "nodes" / "networks"）。
+
+        查不出来（网络问题、权限）时返回 False —— 宁可把原错误抛上去，
+        也不能凭一次失败的查询就假装删成功。
+        """
+        try:
+            data = _keyed(self.get("/api/labs/%s/%s" % (_q(path), kind)))
+        except EveError:
+            return False
+        return str(nid) not in {str(k) for k in (data or {})}
 
     def templates(self):
         """模板清单：{模板名: 描述}。没装镜像的模板描述里带 `.missing`。"""
@@ -391,6 +453,19 @@ class EveSession:
                 out[k] = v
         return out, prefix
 
+    def template_type(self, name):
+        """模板对应的节点类型（qemu/iol/docker/dynamips…）。
+
+        EVE 的 `type` 不等于模板名：vios 是 qemu、iol 是 iol、docker 是 docker。
+        Pro 7.x 会校验这个字段，填成模板名直接 20022「Cannot add node」。
+        模板详情里带 `type`，拿不到就退回模板名（CE 老版本能容忍）。
+        """
+        try:
+            t = self.template_options(name) or {}
+        except EveError:
+            return name
+        return (t.get("type") or name) if isinstance(t, dict) else name
+
     def add_node(self, path, props):
         """新增节点。
 
@@ -409,7 +484,7 @@ class EveSession:
         merged = dict(defaults)
         merged.update({k: v for k, v in body.items() if v not in (None, "")})
         merged["template"] = tpl
-        merged["type"] = tpl                     # EVE 内部按 type 分派，两者一致
+        merged["type"] = self.template_type(tpl)   # vios→qemu 这类映射，不能直接填模板名
         merged["name"] = (body.get("name") or "").strip() or prefix or "R"
         merged["left"] = int(body.get("left") or 300)
         merged["top"] = int(body.get("top") or 300)
@@ -417,8 +492,17 @@ class EveSession:
         return data
 
     def delete_node(self, path, nid):
-        """删节点。EVE 会先停掉节点、清 tmp 目录，再写回 .unl。"""
-        return self.delete("/api/labs/%s/nodes/%s" % (_q(path), nid))
+        """删节点。EVE 会先停掉节点、清 tmp 目录，再写回 .unl。
+
+        和 delete_network 一样，Pro 对「已经不存在」的节点也回 500，
+        复核后当成功处理（批量删除时常见：别人已经删掉了）。
+        """
+        try:
+            return self.delete("/api/labs/%s/nodes/%s" % (_q(path), nid))
+        except EveError:
+            if self._gone(path, "nodes", nid):
+                return None
+            raise
 
     def move_node(self, path, nid, left, top):
         """只改坐标。EVE 的 editNode 是「给了才改」的语义，所以只发 id/left/top。"""
