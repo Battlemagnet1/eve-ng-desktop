@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import capture, clip, images, netcfg
 from .config import Config
+from .notes import Notes
 from .eve import EveError, EveSession
 from .remote import Remote, RemoteError
 from .tasks import TaskManager
@@ -43,6 +44,7 @@ class App:
         self.terms = TermManager()
         self.tasks = TaskManager()
         self.caps = capture.Manager()
+        self.notes = Notes()        # 拓扑文本框（本机侧车文件，不进 .unl）
         self.logs = []
         self.debug = False          # --debug：把每个本地接口调用打到控制台，方便排错
         self.h5win = None           # 图形控制台独立窗口（只有图形版启动时才注入）
@@ -424,6 +426,25 @@ class App:
         return (self.cfg.ui().get("capture_dir")
                 or os.path.join(os.path.expanduser("~"), "Documents", "eve-captures"))
 
+    # ---------- 拓扑文本框 ----------
+    def _lab_host(self):
+        """文本框按「哪台服务器 + 哪个实验」分开存，换机器不会串。"""
+        return (self.info or {}).get("host") or ""
+
+    def textboxes(self, path):
+        if not (path or "").strip():
+            return {"items": []}
+        return {"items": self.notes.list(self._lab_host(), path)}
+
+    def save_textboxes(self, path, items):
+        path = (path or "").strip()
+        if not path:
+            raise EveError("缺少参数：实验路径")
+        if not self._lab_host():
+            raise EveError("尚未连接服务器")
+        out = self.notes.set(self._lab_host(), path, items)
+        return {"items": out}
+
 
     # ---------- 图形控制台窗口 ----------
     def open_console_window(self, url, title=""):
@@ -691,6 +712,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/profiles":
             return self._json({"ok": True, "items": a.cfg.profiles(),
                                "active": a.cfg.data.get("active")})
+        if path == "/api/textboxes":
+            return self._json({"ok": True, **a.textboxes(q.get("path", ""))})
         return self._err("未知接口 %s" % path, 404)
 
     # ---------- POST ----------
@@ -881,6 +904,9 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 a.eve.add_network(p_, net)                      # 不带 = 新建
             return self._json({"ok": True, "umtime": a.eve.lab_umtime(p_)})
+        if path == "/api/textboxes":
+            return self._json({"ok": True, **a.save_textboxes(
+                body.get("path"), body.get("items"))})
         return self._err("未知接口 %s" % path, 404)
 
     # ---------- 终端 SSE ----------

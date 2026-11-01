@@ -1,8 +1,20 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-lang="zh" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <title>EVE Desktop</title>
+<script>
+/* 语言/主题要在样式表生效前定下来，否则打开会先闪一下另一种配色 */
+(function () {
+  try {
+    var t = localStorage.getItem('eve.theme');
+    var l = localStorage.getItem('eve.lang');
+    document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
+    document.documentElement.setAttribute('data-lang', l === 'en' ? 'en' : 'zh');
+    document.documentElement.lang = l === 'en' ? 'en' : 'zh-CN';
+  } catch (e) {}
+})();
+</script>
 <link rel="stylesheet" href="/vendor/xterm.css">
 <link rel="stylesheet" href="/style.css">
 </head>
@@ -19,6 +31,10 @@
     <button data-view="net">网络</button>
     <button data-view="settings">设置</button>
   </nav>
+  <div class="prefs">
+    <button class="pbtn" id="btnLang" data-notrans title="Switch to English">EN</button>
+    <button class="pbtn" id="btnTheme" data-notrans title="切换到亮色主题">☀</button>
+  </div>
   <div class="conn" id="conn">
     <span class="dot off" id="connDot"></span>
     <span id="connText">未连接</span>
@@ -45,6 +61,7 @@
         <div class="lab-title" id="labTitle">未选择实验</div>
         <div class="lab-actions">
           <button class="btn sm ghost" id="btnAddNode" title="从模板库新建节点（也可直接拖到画布）">＋ 节点</button>
+          <button class="btn sm ghost" id="btnAddText" title="在拓扑上放文本框（也可以直接在画布空白处右键）">＋ 文本</button>
           <button class="btn sm ghost" id="btnCapture" title="抓包并用 Wireshark 打开">抓包</button>
           <button class="btn sm" id="btnStartAll" title="启动全部节点">全部启动</button>
           <button class="btn sm" id="btnStopAll" title="停止全部节点">全部停止</button>
@@ -61,7 +78,10 @@
         <div class="stage-hint" id="stageHint">从左侧选择实验</div>
         <div class="marquee" id="marquee"></div>
         <div class="zoom" id="zoomLabel">100%</div>
-        <div class="stage-tip">左键框选 · Ctrl/Shift+点击加选 · 中键或 Alt+左键平移 · 滚轮缩放 · Shift+拖节点到另一个节点＝接线 · 已经接上的链路会标出两端接口名</div>
+        <div class="stage-tip" data-notrans>
+          <span class="L-zh">左键框选 · Ctrl/Shift+点击加选 · 中键或 Alt+左键平移 · 滚轮缩放 · Shift+拖节点到另一个节点＝接线 · 已经接上的链路会标出两端接口名 · 空白处右键可加文本框</span>
+          <span class="L-en">Drag to box-select · Ctrl/Shift+click to multi-select · middle-drag or Alt+drag to pan · wheel to zoom · Shift+drag a node onto another to connect · links show both interface names · right-click empty space to add text boxes</span>
+        </div>
 
         <!-- 模板库（新建节点） -->
         <aside class="palette" id="palette">
@@ -81,8 +101,9 @@
             <button class="mini" id="capClose">×</button>
           </div>
           <div class="cap-list" id="capList"><div class="empty">还没有在抓的会话</div></div>
-          <div class="cap-foot" id="capFoot">
-            点节点网卡上的「抓包」会立刻拉起本机 Wireshark 实时显示；这里只负责停止与留档。
+          <div class="cap-foot" id="capFoot" data-notrans>
+            <span class="L-zh">点节点网卡上的「抓包」会立刻拉起本机 Wireshark 实时显示；这里只负责停止与留档。</span>
+            <span class="L-en">Press Capture on a node NIC to launch the local Wireshark and stream live; this panel only stops and archives captures.</span>
           </div>
         </aside>
       </div>
@@ -128,16 +149,25 @@
           <button class="btn ghost" id="btnNetRefresh">刷新</button>
         </div>
       </div>
-      <p class="hint">
-        <b>pnet0</b> 是 EVE 管理网，本工具永不修改。需要让实验里的设备上外网时，
+      <p class="hint" data-notrans>
+        <span class="L-zh"><b>pnet0</b> 是 EVE 管理网，本工具永不修改。需要让实验里的设备上外网时，
         有三种做法：① 拓扑里新建 <code>Cloud0</code>（型 pnet0）直连局域网；
-        ② 用下面的 NAT 出口新建一条独立云，节点走 NAT 出去；③ 给 pnetN 绑物理网卡（需多网卡）。
+        ② 用下面的 NAT 出口新建一条独立云，节点走 NAT 出去；③ 给 pnetN 绑物理网卡（需多网卡）。</span>
+        <span class="L-en"><b>pnet0</b> is the EVE management network, which this tool never modifies. To give lab
+        devices internet access you have three options: 1) create a <code>Cloud0</code> in the topology
+        (type pnet0) that bridges to your LAN; 2) use the NAT uplink below to create a separate cloud and
+        route nodes through NAT; 3) bind a physical NIC to pnetN (requires an extra NIC).</span>
       </p>
       <div class="pnet-grid" id="pnetGrid"></div>
 
       <h2>NAT 出口</h2>
-      <p class="hint">在不改动 <code>/etc/network/interfaces</code> 的前提下，新建 <code>pnetN</code> 网桥 +
-        dnsmasq + MASQUERADE，实验节点接上这条云即可访问外网。可一键卸载。</p>
+      <p class="hint" data-notrans>
+        <span class="L-zh">在不改动 <code>/etc/network/interfaces</code> 的前提下，新建 <code>pnetN</code> 网桥 +
+        dnsmasq + MASQUERADE，实验节点接上这条云即可访问外网。可一键卸载。</span>
+        <span class="L-en">Without touching <code>/etc/network/interfaces</code>, this creates a <code>pnetN</code>
+        bridge plus dnsmasq and MASQUERADE so lab nodes attached to that cloud can reach the internet.
+        It can be removed in one click.</span>
+      </p>
       <div class="form-row">
         <label>云编号 <select id="natPnet"></select></label>
         <label>出口网卡 <select id="natUp"></select></label>
@@ -227,6 +257,7 @@ window.addEventListener('unhandledrejection', function (ev) {
 </script>
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
+<script src="/i18n.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

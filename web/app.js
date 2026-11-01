@@ -25,6 +25,7 @@ const S = {
   linking: null,       // Shift 拖线接线的临时状态
   ifaces: {},          // {节点id: [{name, network_id, id}]}，给链路标注接口名用
   showP2P: false,      // 是否把「只挂 2 个接口的直连桥」也画成图标（默认隐藏）
+  texts: [],           // 拓扑文本框（存在本机，不进 EVE 的 .unl）
 };
 
 /* ------------------------------------------------------------------ 工具 */
@@ -203,18 +204,18 @@ function renderLabs() {
   const tree = $('#labTree');
   const parts = S.cwd ? S.cwd.split('/') : [];
   $('#crumbs').innerHTML = '<a data-p="">根目录</a>' + parts.map((p, i) =>
-    ' / <a data-p="' + esc(parts.slice(0, i + 1).join('/')) + '">' + esc(p) + '</a>').join('');
+    ' / <a data-p="' + esc(parts.slice(0, i + 1).join('/')) + '" data-notrans>' + esc(p) + '</a>').join('');
 
   let html = '';
   if (S.cwd) html += `<div class="lab-item" data-up="1"><span class="ico">↑</span>上一级</div>`;
   (S.labs.folders || []).forEach(f => {
     html += `<div class="lab-item" data-dir="${esc(f.path || f.name)}">
-      <span class="ico">▸</span>${esc(f.name)}</div>`;
+      <span class="ico">▸</span><span data-notrans>${esc(f.name)}</span></div>`;
   });
   (S.labs.labs || []).forEach(l => {
     const on = l.path === S.labPath ? ' on' : '';
     html += `<div class="lab-item${on}" data-lab="${esc(l.path)}">
-      <span class="ico">◈</span>${esc(l.name)}
+      <span class="ico">◈</span><span data-notrans>${esc(l.name)}</span>
       <span class="tag">${esc((l.mtime || '').slice(0, 11))}</span></div>`;
   });
   tree.innerHTML = html || '<div class="empty">空目录</div>';
@@ -282,11 +283,12 @@ async function openLab(path) {
   S.sel = null;
   S.selIds = [];
   S.ifaces = {};           // 旧实验的接口信息不能留在新画布上
+  S.texts = [];            // 旧实验的文本框同理（异步拉回来后再画）
   try { history.replaceState(null, '', '#lab=' + encodeURIComponent(path)); } catch (e) {}
   const d = await api('/api/lab?path=' + encodeURIComponent(path));
   S.lab = d;
   S.umtime = d.umtime;
-  $('#labTitle').textContent = (d.meta && (d.meta.name || path)) + `　${d.total} 节点 · 运行 ${d.running}`;
+  setLabTitle(d);
   $('#stageHint').style.display = 'none';
   renderInspector(null);
   renderTopology();
@@ -294,6 +296,14 @@ async function openLab(path) {
   renderLabs();
   startPoll();
   loadIfaces();
+  loadTexts();
+}
+
+/* 标题 = 实验名（用户数据，不翻译）+ 节点统计（走词典） */
+function setLabTitle(d) {
+  const name = (d && d.meta && (d.meta.name || S.labPath)) || S.labPath || '';
+  const total = (d && d.total) || 0, running = (d && d.running) || 0;
+  $('#labTitle').innerHTML = `<span data-notrans>${esc(name)}</span>　${total} 节点 · 运行 ${running}`;
 }
 
 /* 把整个实验的网卡拉回来：只用来给「已接线的链路」标接口名 */
@@ -325,7 +335,7 @@ function startPoll() {
         const n = d.nodes[el.dataset.id];
         if (n) el.classList.toggle('running', isRunning(n));
       });
-      $('#labTitle').textContent = (d.meta && (d.meta.name || S.labPath)) + `　${d.total} 节点 · 运行 ${d.running}`;
+      setLabTitle(d);
     } catch (e) { /* 静默 */ }
   }, 3000);
 }
@@ -429,6 +439,183 @@ function renderTopology() {
   fit();            // 先把缩放定下来，标签的错行间距要按最终比例算
   drawLinks();
   applyT();
+  renderTexts();
+}
+
+/* ------------------------------------------------------------------ 文本框
+   文本框不是 EVE 的对象（.unl 里只有 node / network），往实验文件里塞自定义
+   元素会被 EVE 静默丢掉，所以存本机侧车文件，走 /api/textboxes。
+   画布上就是一组可拖动、双击可改字的 div，坐标与节点同一套世界坐标。   */
+function textBoxId() {
+  return Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
+}
+
+function renderTexts() {
+  const host = $('#nodes');
+  if (!host) return;
+  $$('.tbx').forEach(el => el.remove());
+  (S.texts || []).forEach(t => {
+    const el = document.createElement('div');
+    el.className = 'tbx s' + (t.size || '2') + (t.color ? ' c-' + t.color : '');
+    el.dataset.tid = t.id;
+    el.style.left = Number(t.x || 0) + 'px';
+    el.style.top = Number(t.y || 0) + 'px';
+    el.textContent = t.text;              // 用户自己写的字，不翻译
+    el.setAttribute('data-notrans', '');
+    host.appendChild(el);
+  });
+}
+
+async function loadTexts() {
+  const p = S.labPath;
+  if (!p) { S.texts = []; renderTexts(); return; }
+  try {
+    const d = await api('/api/textboxes?path=' + encodeURIComponent(p));
+    if (p !== S.labPath) return;           // 期间切了实验就别覆盖
+    S.texts = d.items || [];
+  } catch (e) {
+    S.texts = [];
+  }
+  renderTexts();
+}
+
+let textsTimer = null;
+function saveTexts(now) {
+  const path = S.labPath;
+  if (!path) return Promise.resolve();
+  const snapshot = (S.texts || []).map(t => ({ ...t }));   // 拖拽时对象还在改，先快照
+  const push = () => api('/api/textboxes', { method: 'PUT', body: { path, items: snapshot } })
+    .catch(fail);
+  clearTimeout(textsTimer);
+  if (now) return push();
+  textsTimer = setTimeout(push, 400);      // 连续拖动时合并成一次写盘
+  return Promise.resolve();
+}
+
+function textBoxDialog() {
+  return new Promise(resolve => {
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-mask';
+    wrap.innerHTML = `<div class="modal wide"><h3>添加文本框</h3>
+      <div class="mbody">
+        <label>文本框内容（每行一个）<textarea id="tbxText"
+          placeholder="核心区&#10;接入层&#10;服务器区"></textarea></label>
+        <p class="mhint"><span class="L-zh">每一行会变成<b>一个独立文本框</b>，空行自动忽略；
+          想放几个就写几行。放好后可拖动位置、双击改字、右键删除。</span><span class="L-en">Each line
+          becomes <b>a separate text box</b> — blank lines are skipped, so write as many lines as you
+          need. Afterwards drag them around, double-click to edit, or right-click to delete.</span></p>
+        <div class="mrow">
+          <label>字号<select id="tbxSize">
+            <option value="1">小</option><option value="2" selected>中</option><option value="3">大</option>
+          </select></label>
+          <label>颜色<select id="tbxColor">
+            <option value="">默认</option><option value="accent">蓝色</option>
+            <option value="ok">绿色</option><option value="warn">橙色</option><option value="err">红色</option>
+          </select></label>
+        </div>
+      </div>
+      <div class="mfoot"><button class="btn ghost" data-x="0">取消</button>
+        <button class="btn" data-x="1">确定</button></div></div>`;
+    document.body.appendChild(wrap);
+    const ta = wrap.querySelector('#tbxText');
+    ta.focus();
+    const done = ok => {
+      let out = null;
+      if (ok) {
+        out = {
+          text: ta.value,
+          size: wrap.querySelector('#tbxSize').value,
+          color: wrap.querySelector('#tbxColor').value,
+        };
+      }
+      wrap.remove();
+      resolve(out);
+    };
+    wrap.addEventListener('click', e => {
+      const b = e.target.closest('[data-x]');
+      if (b) done(b.dataset.x === '1');
+      else if (e.target === wrap) done(false);
+    });
+    wrap.addEventListener('keydown', e => {
+      if (e.key === 'Escape') done(false);
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) done(true);
+    });
+  });
+}
+
+/* 一次放多个：每行一个文本框，按列铺开，避免全叠在一个点上 */
+async function addTextBoxes(x, y) {
+  if (!S.labPath) return toast('先打开一个实验', 'warn');
+  const f = await textBoxDialog();
+  if (!f) return;
+  const lines = String(f.text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (!lines.length) return toast('没有可用的文本：每一行写一个文本框', 'warn');
+  const cols = lines.length > 6 ? 2 : 1;
+  const rows = Math.ceil(lines.length / cols);
+  const colW = 210, rowH = 42;
+  const baseX = Number.isFinite(x) ? x : 320;
+  const baseY = Number.isFinite(y) ? y : 320;
+  lines.forEach((text, i) => {
+    const col = Math.floor(i / rows), row = i % rows;
+    S.texts.push({
+      id: textBoxId(), text,
+      x: Math.round(baseX + col * colW),
+      y: Math.round(baseY + row * rowH),
+      size: f.size || '2', color: f.color || '',
+    });
+  });
+  renderTexts();
+  await saveTexts(true);
+  toast(`已添加 ${lines.length} 个文本框`, 'ok');
+}
+
+/* 双击原地改字（contenteditable），失焦或 Ctrl+Enter 存盘，Esc 放弃 */
+function editTextBox(el) {
+  if (!el || el.classList.contains('editing')) return;
+  const t = (S.texts || []).find(x => x.id === el.dataset.tid);
+  if (!t) return;
+  el.classList.add('editing');
+  el.setAttribute('contenteditable', 'true');
+  el.focus();
+  try {
+    const sel = window.getSelection();
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  } catch (e) { /* 选区失败也能打字 */ }
+  const finish = save => {
+    el.removeEventListener('blur', onBlur);
+    el.removeEventListener('keydown', onKey);
+    el.classList.remove('editing');
+    el.removeAttribute('contenteditable');
+    if (!save) return renderTexts();
+    const v = String(el.textContent || '').replace(/\s+$/, '').replace(/^\s+/, '');
+    if (!v) {                       // 清空 = 删掉这个文本框
+      S.texts = (S.texts || []).filter(x => x.id !== t.id);
+      renderTexts();
+      return saveTexts(true);
+    }
+    t.text = v;
+    renderTexts();
+    saveTexts(true);
+  };
+  const onBlur = () => finish(true);
+  const onKey = ev => {
+    ev.stopPropagation();           // 别让画布的快捷键把字吃掉
+    if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); finish(true); }
+  };
+  el.addEventListener('blur', onBlur);
+  el.addEventListener('keydown', onKey);
+}
+
+function deleteTextBox(el) {
+  const id = el && el.dataset.tid;
+  if (!id) return;
+  S.texts = (S.texts || []).filter(x => x.id !== id);
+  renderTexts();
+  saveTexts(true);
 }
 
 /* 连线单独一层：拖动节点时只重画线，不重算缩放（否则视角会跳） */
@@ -613,6 +800,7 @@ function fit() {
   const xs = [], ys = [];
   Object.values(L.nodes || {}).forEach(n => { xs.push(Number(n.left || 0)); ys.push(Number(n.top || 0)); });
   Object.values(L.networks || {}).forEach(n => { xs.push(Number(n.left || 0)); ys.push(Number(n.top || 0)); });
+  (S.texts || []).forEach(t => { xs.push(Number(t.x || 0)); ys.push(Number(t.y || 0)); });
   if (!xs.length) return;
   const minX = Math.min(...xs), maxX = Math.max(...xs);
   const minY = Math.min(...ys), maxY = Math.max(...ys);
@@ -1635,6 +1823,12 @@ function bind() {
   };
   $('#btnReload').onclick = () => S.labPath && openLab(S.labPath).catch(fail);
   $('#btnAddNode').onclick = () => togglePalette();
+  $('#btnAddText').onclick = () => {
+    if (!S.labPath) return toast('先打开一个实验', 'warn');
+    const box = $('#stage').getBoundingClientRect();
+    addTextBoxes((box.width / 2 - S.tx) / S.z - 60,
+                 (box.height / 2 - S.ty) / S.z - 60).catch(fail);
+  };
   $('#btnCapture').onclick = () => toggleCapPanel();
   $('#palClose').onclick = () => togglePalette(false);
   $('#capClose').onclick = () => toggleCapPanel(false);
@@ -1687,11 +1881,11 @@ function bind() {
   // 画布交互：左键空白拖 = 框选；中键 / Alt+左键 = 平移；节点上拖 = 改坐标（多选一起动）
   const stage = $('#stage');
   const SVGNS = 'http://www.w3.org/2000/svg';
-  let pan = null, ndrag = null, mq = null, suppressClick = 0;
+  let pan = null, ndrag = null, mq = null, suppressClick = 0, tbxDrag = null;
   const ndEl = id => document.querySelector(`.nd[data-id="${id}"]`);
 
   stage.addEventListener('mousedown', e => {
-    if (e.target.closest('.nd') || e.target.closest('.net')) return;
+    if (e.target.closest('.nd') || e.target.closest('.net') || e.target.closest('.tbx')) return;
     if (e.button === 1 || (e.button === 0 && e.altKey)) {          // 平移
       e.preventDefault();
       pan = { x: e.clientX, y: e.clientY, tx: S.tx, ty: S.ty };
@@ -1708,6 +1902,18 @@ function bind() {
   });
 
   $('#nodes').addEventListener('mousedown', e => {
+    const tb = e.target.closest('.tbx');
+    if (tb) {                                                      // 拖文本框
+      if (e.button !== 0 || tb.classList.contains('editing')) return;
+      const t = (S.texts || []).find(x => x.id === tb.dataset.tid);
+      if (!t) return;
+      e.preventDefault();          // 别把拖动变成选文字
+      $$('.tbx').forEach(x => x.classList.toggle('sel', x === tb));
+      tbxDrag = { el: tb, t, x: e.clientX, y: e.clientY,
+                  ox: Number(t.x || 0), oy: Number(t.y || 0), moved: false };
+      suppressClick = Date.now();
+      return;
+    }
     const el = e.target.closest('.nd');
     if (!el || !S.lab) return;
     const id = el.dataset.id;
@@ -1769,6 +1975,17 @@ function bind() {
   });
 
   window.addEventListener('mousemove', e => {
+    if (tbxDrag) {
+      const dx = (e.clientX - tbxDrag.x) / S.z, dy = (e.clientY - tbxDrag.y) / S.z;
+      if (!tbxDrag.moved && Math.abs(dx) + Math.abs(dy) < 2) return;
+      tbxDrag.moved = true;
+      const nx = Math.round(tbxDrag.ox + dx), ny = Math.round(tbxDrag.oy + dy);
+      tbxDrag.el.style.left = nx + 'px';
+      tbxDrag.el.style.top = ny + 'px';
+      tbxDrag.t.x = nx;
+      tbxDrag.t.y = ny;
+      return;
+    }
     if (ndrag) {
       const dx = (e.clientX - ndrag.x) / S.z, dy = (e.clientY - ndrag.y) / S.z;
       if (!ndrag.moved && Math.abs(dx) + Math.abs(dy) < 2) return;
@@ -1831,6 +2048,13 @@ function bind() {
   window.addEventListener('mouseup', e => {
     pan = null;
     stage.classList.remove('dragging');
+
+    if (tbxDrag) {
+      const d = tbxDrag;
+      tbxDrag = null;
+      if (d.moved) { saveTexts(); suppressClick = Date.now(); }
+      return;
+    }
 
     if (S.linking) {
       const lk = S.linking;
@@ -2019,9 +2243,11 @@ function bind() {
 
   stage.addEventListener('click', e => {
     if (Date.now() - suppressClick < 350) return;
-    if (e.target.closest('.nd') || e.target.closest('.net') || e.target.closest('.marquee')) return;
+    if (e.target.closest('.nd') || e.target.closest('.net')
+        || e.target.closest('.tbx') || e.target.closest('.marquee')) return;
     if (S.selIds && S.selIds.length) { S.selIds = []; paintSel(); renderInspector(null); }
     $$('.net').forEach(x => x.classList.remove('sel'));
+    $$('.tbx').forEach(x => x.classList.remove('sel'));
   });
   $('#nodes').onclick = e => {
     if (Date.now() - suppressClick < 350) return;
@@ -2034,6 +2260,8 @@ function bind() {
     if (netEl) { selectNet(netEl.dataset.netId); }
   };
   $('#nodes').ondblclick = e => {
+    const tb = e.target.closest('.tbx');
+    if (tb) { editTextBox(tb); return; }
     const nd = e.target.closest('.nd');
     if (nd && S.lab.nodes[nd.dataset.id]) {
       const n = S.lab.nodes[nd.dataset.id];
@@ -2044,11 +2272,27 @@ function bind() {
   // 右键菜单：网络 / 节点（单选或多选）/ 画布空白
   stage.addEventListener('contextmenu', e => {
     if (!S.lab) return;
+    const tbxEl = e.target.closest('.tbx');
     const netEl = e.target.closest('.net');
     const nd = e.target.closest('.nd');
+    if (tbxEl) {
+      e.preventDefault();
+      const t = (S.texts || []).find(x => x.id === tbxEl.dataset.tid) || {};
+      showCtx(e.clientX, e.clientY, [
+        ['编辑文字', () => editTextBox(tbxEl)],
+        ['复制文字', () => clipWrite(t.text || '').catch(fail)],
+        null,
+        ['删除文本框', () => deleteTextBox(tbxEl)],
+      ]);
+      return;
+    }
     if (!netEl && !nd) {
       e.preventDefault();
+      const box = stage.getBoundingClientRect();
+      const wx = (e.clientX - box.left - S.tx) / S.z;
+      const wy = (e.clientY - box.top - S.ty) / S.z;
       showCtx(e.clientX, e.clientY, [
+        ['添加文本框…', () => addTextBoxes(wx, wy).catch(fail)],
         ['添加节点…', () => togglePalette(true)],
         ['添加网络（云）…', () => createCloud()],
         null,
