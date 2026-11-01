@@ -23,7 +23,7 @@ It is not an image repository and does not download images — images are only i
 | Topology editing | Add nodes from templates (name / image / RAM / NIC count), drag to move (multi-select moves together), batch start-stop-delete, rename, create and delete networks, connect ports with interface names drawn on the links; writes carry `umtime` so they never clobber changes made in the EVE web UI |
 | Node icons | Three optional shapes: **circle = router / horizontal bar = switch / vertical bar = firewall** (context menu or inspector, can be applied to a multi-selection) |
 | Nodes | Start / stop / wipe, whole-lab batch start-stop, property view, NIC wiring editor, create cloud |
-| Text boxes | Put **any number of free-form labels** on the canvas (right-click empty space → “Add text boxes…”, one input per box, “Add” appends two at a time): drag, double-click to edit, right-click to delete/copy; three sizes and five colors. Stored locally, **never written into the `.unl`** |
+| Text boxes | Put **any number of free-form labels** on the canvas (right-click empty space → “Add text boxes…”, one input per box, “Add” appends two at a time): multi-line text, drag, marquee-select several and move them together, double-click to edit, right-click to delete/copy; three sizes and five colors. Stored locally, **never written into the `.unl`** |
 | Interface | **Chinese / English switch**, **dark / light theme switch**, both instant and remembered on this machine; covers all UI text including backend error messages |
 | Terminals | Node CLI console (telnet over SSH), EVE host shell, GUI console (embedded EVE html5, covering VNC/RDP) |
 | Capture | Start a capture on any NIC of a running node (tcpdump over SSH) — **Wireshark pops up locally and streams live** while the pcap is archived; BPF filters supported |
@@ -267,19 +267,24 @@ Three entry points, same result:
 |---|---|
 | Right-click empty canvas → “Add text boxes…” | Boxes go where you right-clicked |
 | Toolbar “+ Text” | Boxes go to the centre of the current view |
-| Right-click an existing text box | Edit text / Copy text / Delete text box |
+| Right-click an existing text box | Edit text / Copy text / Delete text box (“Delete N selected” when several are selected) |
 
-**Adding many at once**: the dialog shows one single-line input per text box — **one input =
-one text box**; empty inputs are ignored. It opens with two inputs; each click on **Add**
-appends two more, as many times as you like, and the `×` on a row removes that input. Boxes are
-laid out in columns without overlapping. Size (small / medium / large) and colour (default /
-blue / green / orange / red) apply to the whole batch.
+**Adding many at once**: the dialog shows one input per text box — **one input = one text box**;
+empty inputs are ignored. It opens with two inputs; each click on **Add** appends two more, as
+many times as you like, and the `×` on a row removes that input. **Each box can hold several
+lines — just press Enter inside it** (`Ctrl+Enter` submits). Boxes are laid out in columns without
+overlapping (multi-line boxes are spaced by their real height). Size (small / medium / large) and
+colour (default / blue / green / orange / red) apply to the whole batch.
 
 Afterwards:
 
 - **Drag** to move (written to disk on release; continuous drags are coalesced into one save)
-- **Double-click** to edit in place (`Ctrl+Enter` saves, `Esc` cancels; emptying the text
-  deletes the box)
+- **Marquee-select** several, exactly like nodes: drag a rectangle from empty canvas and every
+  box inside it gets selected; dragging any one of them then moves the whole group
+  (`Shift`/`Ctrl` while dragging a rectangle adds to the selection)
+- **Double-click** to edit in place (Enter inserts a line break; `Ctrl+Enter` saves, `Esc`
+  cancels; emptying the text deletes the box)
+- **Delete / Backspace** removes the selected boxes (all of them at once when several are selected)
 - To change size or colour, delete and re-add the batch (or add a new one with other options)
 
 > Stored in `%APPDATA%\eve-desktop\textboxes.json`, keyed by “server + lab path”, so

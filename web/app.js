@@ -26,6 +26,7 @@ const S = {
   ifaces: {},          // {节点id: [{name, network_id, id}]}，给链路标注接口名用
   showP2P: false,      // 是否把「只挂 2 个接口的直连桥」也画成图标（默认隐藏）
   texts: [],           // 拓扑文本框（存在本机，不进 EVE 的 .unl）
+  tbxSel: [],          // 选中的文本框 id（框选/加选，可与节点各选各的）
 };
 
 /* ------------------------------------------------------------------ 工具 */
@@ -284,6 +285,7 @@ async function openLab(path) {
   S.selIds = [];
   S.ifaces = {};           // 旧实验的接口信息不能留在新画布上
   S.texts = [];            // 旧实验的文本框同理（异步拉回来后再画）
+  S.tbxSel = [];           // 切换实验时清掉文本框选择
   try { history.replaceState(null, '', '#lab=' + encodeURIComponent(path)); } catch (e) {}
   const d = await api('/api/lab?path=' + encodeURIComponent(path));
   S.lab = d;
@@ -464,6 +466,22 @@ function renderTexts() {
     el.setAttribute('data-notrans', '');
     host.appendChild(el);
   });
+  paintTbxSel();
+}
+
+function paintTbxSel() {
+  const ids = S.tbxSel || [];
+  $$('.tbx').forEach(el => el.classList.toggle('sel', ids.includes(el.dataset.tid)));
+}
+
+function deleteSelectedTexts() {
+  const ids = S.tbxSel || [];
+  if (!ids.length) return;
+  S.texts = (S.texts || []).filter(t => !ids.includes(t.id));
+  S.tbxSel = [];
+  renderTexts();
+  saveTexts(true);
+  toast(`已删除 ${ids.length} 个文本框`, 'ok');
 }
 
 async function loadTexts() {
@@ -503,11 +521,13 @@ function textBoxDialog() {
         <div class="tbxlist" id="tbxList"></div>
         <button class="btn sm ghost tbxmore" id="tbxMore"
           title="再加两个文本输入框">＋ 增加</button>
-        <p class="mhint"><span class="L-zh">一个输入框会变成<b>一个独立文本框</b>，空的自动忽略；
-          点「增加」一次加两个，想要多少个就加多少个。放好后可拖动位置、双击改字、右键删除。</span>
-          <span class="L-en">Each input becomes <b>a separate text box</b>; empty ones are skipped.
-          Click Add to get two more inputs, as many times as you like. Afterwards drag them around,
-          double-click to edit, or right-click to delete.</span></p>
+        <p class="mhint"><span class="L-zh">一个输入框会变成<b>一个独立文本框</b>，框内可以按回车换行，
+          空的自动忽略；点「增加」一次加两个，想要多少个就加多少个，<code>Ctrl+Enter</code> 提交。
+          放好后可拖动位置、双击改字、右键删除。</span>
+          <span class="L-en">Each input becomes <b>a separate text box</b> and can hold several
+          lines — just press Enter inside it; empty ones are skipped. Click Add to get two more
+          inputs, as many times as you like; <code>Ctrl+Enter</code> submits. Afterwards drag them
+          around, double-click to edit, or right-click to delete.</span></p>
         <div class="mrow">
           <label>字号<select id="tbxSize">
             <option value="1">小</option><option value="2" selected>中</option><option value="3">大</option>
@@ -536,14 +556,14 @@ function textBoxDialog() {
       for (let i = 0; i < n; i++) {
         const row = document.createElement('div');
         row.className = 'tbxrow';
-        row.innerHTML = '<input type="text" class="tbxinput" placeholder="输入文字…">' +
+        row.innerHTML = '<textarea class="tbxinput" rows="2" placeholder="输入文字…"></textarea>' +
           '<button class="tbxdel" tabindex="-1" title="删除这一行">×</button>';
         list.appendChild(row);
       }
       tidy();
       const all = rows();
       const first = all[all.length - n];
-      if (first) first.querySelector('input').focus();
+      if (first) first.querySelector('textarea').focus();
       list.scrollTop = list.scrollHeight;
     };
 
@@ -581,7 +601,8 @@ function textBoxDialog() {
     wrap.addEventListener('keydown', e => {
       if (e.isComposing) return;                // 输入法选词的回车别当提交
       if (e.key === 'Escape') done(false);
-      else if (e.key === 'Enter') done(true);   // 单行输入框，回车即确定
+      // 敲回车照常换行（每个框里可以写多行），Ctrl+Enter 才提交
+      else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) done(true);
     });
   });
 }
@@ -593,20 +614,25 @@ async function addTextBoxes(x, y) {
   if (!f) return;
   const lines = f.lines || [];
   if (!lines.length) return toast('没有可用的文本：至少填一个输入框', 'warn');
-  const cols = lines.length > 6 ? 2 : 1;
-  const rows = Math.ceil(lines.length / cols);
-  const colW = 210, rowH = 42;
+  // 框里可能有多行，按内容实际高度往下累加，否则会上下叠在一起
+  const size = f.size || '2';
+  const lh = { '1': 17, '2': 20, '3': 24 }[size] || 20;
+  const perCol = 8, colW = 220;
   const baseX = Number.isFinite(x) ? x : 320;
   const baseY = Number.isFinite(y) ? y : 320;
-  lines.forEach((text, i) => {
-    const col = Math.floor(i / rows), row = i % rows;
-    S.texts.push({
-      id: textBoxId(), text,
-      x: Math.round(baseX + col * colW),
-      y: Math.round(baseY + row * rowH),
-      size: f.size || '2', color: f.color || '',
+  for (let i = 0; i < lines.length; i += perCol) {
+    let top = baseY;
+    lines.slice(i, i + perCol).forEach(text => {
+      const hpx = Math.max(1, String(text).split('\n').length) * lh;
+      S.texts.push({
+        id: textBoxId(), text,
+        x: Math.round(baseX + (i / perCol) * colW),
+        y: Math.round(top + hpx / 2),     // 坐标是框中心
+        size, color: f.color || '',
+      });
+      top += hpx + 14;
     });
-  });
+  }
   renderTexts();
   await saveTexts(true);
   toast(`已添加 ${lines.length} 个文本框`, 'ok');
@@ -635,7 +661,9 @@ function editTextBox(el) {
     el.classList.remove('editing');
     el.removeAttribute('contenteditable');
     if (!save) return renderTexts();
-    const v = String(el.textContent || '').replace(/\s+$/, '').replace(/^\s+/, '');
+    // 必须用 innerText：contenteditable 里回车生成的是 <div>/<br>，textContent 会把
+    // 换行吞掉，"第一行\n第二行" 存进去只剩 "第一行第二行"
+    const v = String(el.innerText || '').replace(/[ \t]+$/gm, '').replace(/^\s+|\s+$/g, '');
     if (!v) {                       // 清空 = 删掉这个文本框
       S.texts = (S.texts || []).filter(x => x.id !== t.id);
       renderTexts();
@@ -659,6 +687,7 @@ function deleteTextBox(el) {
   const id = el && el.dataset.tid;
   if (!id) return;
   S.texts = (S.texts || []).filter(x => x.id !== id);
+  S.tbxSel = (S.tbxSel || []).filter(x => x !== id);
   renderTexts();
   saveTexts(true);
 }
@@ -1949,20 +1978,30 @@ function bind() {
     const additive = e.ctrlKey || e.shiftKey;
     mq = { x0: e.clientX, y0: e.clientY, left: r.left, top: r.top,
            base: additive ? new Set(S.selIds || []) : new Set(),
-           additive, moved: false, cur: additive ? new Set(S.selIds || []) : new Set() };
-    if (!additive) { S.selIds = []; paintSel(); }
+           baseTbx: additive ? new Set(S.tbxSel || []) : new Set(),
+           additive, moved: false,
+           cur: additive ? new Set(S.selIds || []) : new Set(),
+           curTbx: additive ? new Set(S.tbxSel || []) : new Set() };
+    if (!additive) { S.selIds = []; paintSel(); S.tbxSel = []; paintTbxSel(); }
   });
 
   $('#nodes').addEventListener('mousedown', e => {
     const tb = e.target.closest('.tbx');
-    if (tb) {                                                      // 拖文本框
+    if (tb) {                                                      // 拖文本框（多选时整组走）
       if (e.button !== 0 || tb.classList.contains('editing')) return;
       const t = (S.texts || []).find(x => x.id === tb.dataset.tid);
       if (!t) return;
       e.preventDefault();          // 别把拖动变成选文字
-      $$('.tbx').forEach(x => x.classList.toggle('sel', x === tb));
-      tbxDrag = { el: tb, t, x: e.clientX, y: e.clientY,
-                  ox: Number(t.x || 0), oy: Number(t.y || 0), moved: false };
+      if (!(S.tbxSel || []).includes(t.id)) { S.tbxSel = [t.id]; paintTbxSel(); }
+      const ids = S.tbxSel.slice();
+      tbxDrag = {
+        x: e.clientX, y: e.clientY, moved: false,
+        items: ids.map(id => {
+          const o = (S.texts || []).find(x => x.id === id);
+          const el = document.querySelector(`.tbx[data-tid="${id}"]`);
+          return o && el ? { t: o, el, ox: Number(o.x || 0), oy: Number(o.y || 0) } : null;
+        }).filter(Boolean),
+      };
       suppressClick = Date.now();
       return;
     }
@@ -2031,11 +2070,13 @@ function bind() {
       const dx = (e.clientX - tbxDrag.x) / S.z, dy = (e.clientY - tbxDrag.y) / S.z;
       if (!tbxDrag.moved && Math.abs(dx) + Math.abs(dy) < 2) return;
       tbxDrag.moved = true;
-      const nx = Math.round(tbxDrag.ox + dx), ny = Math.round(tbxDrag.oy + dy);
-      tbxDrag.el.style.left = nx + 'px';
-      tbxDrag.el.style.top = ny + 'px';
-      tbxDrag.t.x = nx;
-      tbxDrag.t.y = ny;
+      tbxDrag.items.forEach(it => {
+        const nx = Math.round(it.ox + dx), ny = Math.round(it.oy + dy);
+        it.el.style.left = nx + 'px';
+        it.el.style.top = ny + 'px';
+        it.t.x = nx;
+        it.t.y = ny;
+      });
       return;
     }
     if (ndrag) {
@@ -2094,6 +2135,15 @@ function bind() {
       mq.cur = hit;
       S.selIds = Array.from(hit);
       paintSel();
+      // 文本框一起框：和节点各算各的集合，互不干扰
+      const hitT = new Set(mq.baseTbx);
+      $$('.tbx').forEach(el => {
+        const r = el.getBoundingClientRect();
+        if (!(r.right < L || r.left > R || r.bottom < T || r.top > B)) hitT.add(el.dataset.tid);
+      });
+      mq.curTbx = hitT;
+      S.tbxSel = Array.from(hitT);
+      paintTbxSel();
     }
   });
 
@@ -2141,10 +2191,14 @@ function bind() {
         suppressClick = Date.now();      // 框选结束会紧跟一个 click，别把它当成「点空白取消选择」
         S.selIds = Array.from(cur.cur || []);
         paintSel();
+        S.tbxSel = Array.from(cur.curTbx || []);
+        paintTbxSel();
         syncInspector().catch(() => {});
       } else if (!cur.additive) {
         S.selIds = [];
         paintSel();
+        S.tbxSel = [];
+        paintTbxSel();
         renderInspector(null);
       }
       return;
@@ -2293,13 +2347,24 @@ function bind() {
     applyT();
   }, { passive: false });
 
+  // Delete / Backspace 删掉选中的文本框；正在输入框里打字时不拦
+  window.addEventListener('keydown', e => {
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+    if (!(S.tbxSel || []).length) return;
+    const a = document.activeElement;
+    if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return;
+    if (document.querySelector('.modal-mask')) return;
+    e.preventDefault();
+    deleteSelectedTexts();
+  });
+
   stage.addEventListener('click', e => {
     if (Date.now() - suppressClick < 350) return;
     if (e.target.closest('.nd') || e.target.closest('.net')
         || e.target.closest('.tbx') || e.target.closest('.marquee')) return;
     if (S.selIds && S.selIds.length) { S.selIds = []; paintSel(); renderInspector(null); }
     $$('.net').forEach(x => x.classList.remove('sel'));
-    $$('.tbx').forEach(x => x.classList.remove('sel'));
+    if ((S.tbxSel || []).length) { S.tbxSel = []; paintTbxSel(); }
   });
   $('#nodes').onclick = e => {
     if (Date.now() - suppressClick < 350) return;
@@ -2329,12 +2394,17 @@ function bind() {
     const nd = e.target.closest('.nd');
     if (tbxEl) {
       e.preventDefault();
-      const t = (S.texts || []).find(x => x.id === tbxEl.dataset.tid) || {};
+      const tid = tbxEl.dataset.tid;
+      const t = (S.texts || []).find(x => x.id === tid) || {};
+      // 右键的框若不在当前选中集里，就把选择切成它自己
+      if (!(S.tbxSel || []).includes(tid)) { S.tbxSel = [tid]; paintTbxSel(); }
+      const n = S.tbxSel.length;
       showCtx(e.clientX, e.clientY, [
         ['编辑文字', () => editTextBox(tbxEl)],
         ['复制文字', () => clipWrite(t.text || '').catch(fail)],
         null,
-        ['删除文本框', () => deleteTextBox(tbxEl)],
+        n > 1 ? [`删除选中的 ${n} 个文本框`, () => deleteSelectedTexts()]
+              : ['删除文本框', () => deleteTextBox(tbxEl)],
       ]);
       return;
     }

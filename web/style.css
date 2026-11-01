@@ -483,11 +483,16 @@ html[data-lang="en"] .L-zh{display:none}
 
 /* ---------- 文本框编辑弹窗 ---------- */
 .modal.wide{width:400px}
-.modal textarea{
+.modal textarea:not(.tbxinput){
   min-height:132px;resize:vertical;line-height:1.6;
   font-family:Consolas,"Courier New",monospace;
 }
 .modal .mhint{font-size:11.5px;color:var(--txt3);line-height:1.65;margin:-4px 0 0}
+.modal .mhint code{
+  font-family:Consolas,"Courier New",monospace;font-size:10.5px;
+  padding:1px 4px;border-radius:3px;background:var(--sunk);
+  border:1px solid var(--line2);color:var(--txt2);
+}
 .modal .mrow{display:flex;gap:10px}
 .modal .mrow label{flex:1}
 
@@ -497,17 +502,19 @@ html[data-lang="en"] .L-zh{display:none}
   display:flex;flex-direction:column;gap:8px;
   max-height:240px;overflow:auto;padding-right:4px;
 }
-.tbxrow{display:flex;align-items:center;gap:6px}
-.tbxinput{
-  flex:0 0 300px;width:300px;height:30px;padding:0 9px;
-  background:var(--sunk);color:var(--txt);border:1px solid var(--line2);
-  border-radius:7px;font-size:12.5px;outline:none;
+.tbxrow{display:flex;align-items:flex-start;gap:6px}
+/* 每个框内部可以换行，所以是 textarea 而不是 input；窄一点，两行高 */
+.modal .tbxinput{
+  display:block;flex:0 0 300px;width:300px;min-height:48px;max-height:130px;
+  padding:5px 9px;background:var(--sunk);color:var(--txt);border:1px solid var(--line2);
+  border-radius:7px;font-family:inherit;font-size:12.5px;line-height:1.55;
+  outline:none;resize:vertical;overflow:auto;
   transition:border-color .12s;
 }
-.tbxinput::placeholder{color:var(--txt3)}
-.tbxinput:focus{border-color:var(--accent)}
+.modal .tbxinput::placeholder{color:var(--txt3)}
+.modal .tbxinput:focus{border-color:var(--accent)}
 .tbxdel{
-  flex:0 0 24px;width:24px;height:24px;padding:0;line-height:1;
+  flex:0 0 24px;width:24px;height:24px;margin-top:4px;padding:0;line-height:1;
   font-size:15px;cursor:pointer;border-radius:6px;
   color:var(--txt3);background:transparent;border:1px solid var(--line2);
 }
