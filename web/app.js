@@ -492,18 +492,22 @@ function saveTexts(now) {
   return Promise.resolve();
 }
 
+/* 添加文本框：一个输入框 = 一个文本框，点「增加」一次追加两个，想要多少加多少 */
 function textBoxDialog() {
   return new Promise(resolve => {
     const wrap = document.createElement('div');
     wrap.className = 'modal-mask';
     wrap.innerHTML = `<div class="modal wide"><h3>添加文本框</h3>
       <div class="mbody">
-        <label>文本框内容（每行一个）<textarea id="tbxText"
-          placeholder="核心区&#10;接入层&#10;服务器区"></textarea></label>
-        <p class="mhint"><span class="L-zh">每一行会变成<b>一个独立文本框</b>，空行自动忽略；
-          想放几个就写几行。放好后可拖动位置、双击改字、右键删除。</span><span class="L-en">Each line
-          becomes <b>a separate text box</b> — blank lines are skipped, so write as many lines as you
-          need. Afterwards drag them around, double-click to edit, or right-click to delete.</span></p>
+        <div class="mlabel">文本框内容</div>
+        <div class="tbxlist" id="tbxList"></div>
+        <button class="btn sm ghost tbxmore" id="tbxMore"
+          title="再加两个文本输入框">＋ 增加</button>
+        <p class="mhint"><span class="L-zh">一个输入框会变成<b>一个独立文本框</b>，空的自动忽略；
+          点「增加」一次加两个，想要多少个就加多少个。放好后可拖动位置、双击改字、右键删除。</span>
+          <span class="L-en">Each input becomes <b>a separate text box</b>; empty ones are skipped.
+          Click Add to get two more inputs, as many times as you like. Afterwards drag them around,
+          double-click to edit, or right-click to delete.</span></p>
         <div class="mrow">
           <label>字号<select id="tbxSize">
             <option value="1">小</option><option value="2" selected>中</option><option value="3">大</option>
@@ -517,13 +521,48 @@ function textBoxDialog() {
       <div class="mfoot"><button class="btn ghost" data-x="0">取消</button>
         <button class="btn" data-x="1">确定</button></div></div>`;
     document.body.appendChild(wrap);
-    const ta = wrap.querySelector('#tbxText');
-    ta.focus();
+
+    const list = wrap.querySelector('#tbxList');
+    const rows = () => [...list.querySelectorAll('.tbxrow')];
+    const inputs = () => [...list.querySelectorAll('.tbxinput')];
+
+    // 只剩一行时藏掉删除键，免得把弹窗删成空的
+    const tidy = () => {
+      const n = rows().length;
+      rows().forEach(r => { r.querySelector('.tbxdel').style.visibility = n > 1 ? '' : 'hidden'; });
+    };
+
+    const addRows = n => {
+      for (let i = 0; i < n; i++) {
+        const row = document.createElement('div');
+        row.className = 'tbxrow';
+        row.innerHTML = '<input type="text" class="tbxinput" placeholder="输入文字…">' +
+          '<button class="tbxdel" tabindex="-1" title="删除这一行">×</button>';
+        list.appendChild(row);
+      }
+      tidy();
+      const all = rows();
+      const first = all[all.length - n];
+      if (first) first.querySelector('input').focus();
+      list.scrollTop = list.scrollHeight;
+    };
+
+    addRows(2);
+
+    list.addEventListener('click', e => {
+      const d = e.target.closest('.tbxdel');
+      if (!d || rows().length <= 1) return;
+      d.closest('.tbxrow').remove();
+      tidy();
+      const all = inputs();
+      if (all.length) all[all.length - 1].focus();
+    });
+
     const done = ok => {
       let out = null;
       if (ok) {
         out = {
-          text: ta.value,
+          lines: inputs().map(i => i.value.trim()).filter(Boolean),
           size: wrap.querySelector('#tbxSize').value,
           color: wrap.querySelector('#tbxColor').value,
         };
@@ -531,25 +570,29 @@ function textBoxDialog() {
       wrap.remove();
       resolve(out);
     };
+
     wrap.addEventListener('click', e => {
+      if (e.target.closest('#tbxMore')) { addRows(2); return; }   // 「增加」只加框，不关弹窗
       const b = e.target.closest('[data-x]');
       if (b) done(b.dataset.x === '1');
       else if (e.target === wrap) done(false);
     });
+
     wrap.addEventListener('keydown', e => {
+      if (e.isComposing) return;                // 输入法选词的回车别当提交
       if (e.key === 'Escape') done(false);
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) done(true);
+      else if (e.key === 'Enter') done(true);   // 单行输入框，回车即确定
     });
   });
 }
 
-/* 一次放多个：每行一个文本框，按列铺开，避免全叠在一个点上 */
+/* 一次放多个：按列铺开，避免全叠在一个点上 */
 async function addTextBoxes(x, y) {
   if (!S.labPath) return toast('先打开一个实验', 'warn');
   const f = await textBoxDialog();
   if (!f) return;
-  const lines = String(f.text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  if (!lines.length) return toast('没有可用的文本：每一行写一个文本框', 'warn');
+  const lines = f.lines || [];
+  if (!lines.length) return toast('没有可用的文本：至少填一个输入框', 'warn');
   const cols = lines.length > 6 ? 2 : 1;
   const rows = Math.ceil(lines.length / cols);
   const colW = 210, rowH = 42;

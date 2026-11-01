@@ -331,7 +331,11 @@
     '＋ 文本': '+ Text',
     '添加文本框': 'Add text boxes',
     '添加文本框…': 'Add text boxes…',
-    '文本框内容（每行一个）': 'Text boxes (one per line)',
+    '文本框内容': 'Text content',
+    '＋ 增加': '+ Add',
+    '输入文字…': 'Enter text…',
+    '再加两个文本输入框': 'Add two more inputs',
+    '删除这一行': 'Remove this line',
     '字号': 'Font size',
     '小': 'Small',
     '中': 'Medium',
@@ -346,10 +350,9 @@
     '复制文字': 'Copy text',
     '删除文本框': 'Delete text box',
     '已添加 {} 个文本框': 'Added {} text boxes',
-    '没有可用的文本：每一行写一个文本框': 'Nothing to add — put one text box per line',
+    '没有可用的文本：至少填一个输入框': 'Nothing to add — fill in at least one input',
 
     /* 按钮 tooltip（index.html 里 title= 的那几条） */
-    '核心区\n接入层\n服务器区': 'Core\nAccess\nServers',
     '在拓扑上放文本框（也可以直接在画布空白处右键）':
       'Drop text boxes on the topology (or right-click empty canvas)',
     '启动全部节点': 'Start all nodes',
