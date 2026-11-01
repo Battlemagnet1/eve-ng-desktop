@@ -350,6 +350,8 @@
     '复制文字': 'Copy text',
     '删除文本框': 'Delete text box',
     '已添加 {} 个文本框': 'Added {} text boxes',
+    '删除选中的 {} 个文本框': 'Delete {} selected text boxes',
+    '已删除 {} 个文本框': 'Deleted {} text boxes',
     '没有可用的文本：至少填一个输入框': 'Nothing to add — fill in at least one input',
 
     /* 按钮 tooltip（index.html 里 title= 的那几条） */
@@ -489,11 +491,17 @@
 
   function localizeNode(n) {
     if (!n) return;
-    if (n.nodeType === 3) { doText(n); return; }
+    if (n.nodeType === 3) {
+      // 只插进来一个文本节点时（el.textContent = x），往上找有没有 data-notrans
+      if (n.parentElement && n.parentElement.closest('[data-notrans]')) return;
+      doText(n);
+      return;
+    }
     if (n.nodeType !== 1) return;
     var tag = n.tagName;
     if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK') return;
-    if (n.hasAttribute && n.hasAttribute('data-notrans')) return;
+    // closest 而不是 hasAttribute：祖先标了 data-notrans，里面的一切都别碰
+    if (n.closest && n.closest('[data-notrans]')) return;
     doAttr(n);
     var c = n.firstChild;
     while (c) { var next = c.nextSibling; localizeNode(c); c = next; }
@@ -508,6 +516,9 @@
         if (m.type === 'childList') {
           for (var j = 0; j < m.addedNodes.length; j++) localizeNode(m.addedNodes[j]);
         } else if (m.type === 'attributes') {
+          // 带 data-notrans 的元素属性由代码自己管（顶栏两个切换按钮的 title
+          // 就是程序写的），交给 doAttr 会被 origAttr 里的旧值覆盖回去
+          if (m.target.closest && m.target.closest('[data-notrans]')) continue;
           doAttr(m.target);
         }
       }
@@ -529,7 +540,8 @@
     var light = document.documentElement.getAttribute('data-theme') === 'light';
     if (lb) {
       lb.textContent = lang === 'zh' ? 'EN' : '中文';
-      lb.title = lang === 'zh' ? 'Switch to English' : '切换到中文';
+      lb.title = lang === 'zh' ? '切换到英文界面' : 'Switch to Chinese';
+      lb.setAttribute('data-notrans', '');
     }
     if (tb) {
       // 用文字而不是 ☀/☾：这两个符号在 12px 下几乎看不清
