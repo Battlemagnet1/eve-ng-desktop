@@ -153,6 +153,10 @@ button{cursor:pointer}
 .lab-actions{margin-left:auto;display:flex;gap:6px}
 .stage{
   flex:1;position:relative;overflow:hidden;
+  /* clip 才真正不产生滚动容器。文本框（.tbx）用 max-content 宽度，会把
+     #stage 撑出 scrollHeight；只要它是滚动容器，一次 focus() 就能把整个
+     画布滚走，而平移是按 transform 算的，滚走之后坐标系就全错位了。 */
+  overflow:clip;
   background:
     radial-gradient(circle at 1px 1px, var(--grid) 1px, transparent 0) 0 0/22px 22px,
     var(--bg);

@@ -576,7 +576,9 @@ function editTextBox(el) {
   if (!t) return;
   el.classList.add('editing');
   el.setAttribute('contenteditable', 'true');
-  el.focus();
+  // preventScroll 必须给：文本框会把 #stage 撑出滚动范围，默认 focus 会把舞台
+  // 滚过去，而 fit()/applyT() 的坐标是按未滚动算的，一滚就整片内容跑出视野
+  el.focus({ preventScroll: true });
   try {
     const sel = window.getSelection();
     const r = document.createRange();
@@ -785,6 +787,13 @@ function labelFontSize() {
 }
 
 function applyT() {
+  const stage = $('#stage');
+  // 兜底：万一浏览器不支持 overflow:clip，舞台仍会被当成滚动容器，这里每次
+  // 变换都把滚动量清零，保证「画出来的」和「算出来的」是同一套坐标
+  if (stage && (stage.scrollTop || stage.scrollLeft)) {
+    stage.scrollTop = 0;
+    stage.scrollLeft = 0;
+  }
   $('#world').style.transform = `translate(${S.tx}px,${S.ty}px) scale(${S.z})`;
   $('#zoomLabel').textContent = Math.round(S.z * 100) + '%';
   const fs = labelFontSize();
