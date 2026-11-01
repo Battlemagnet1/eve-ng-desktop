@@ -77,10 +77,16 @@
         </div>
         <div class="stage-hint" id="stageHint">从左侧选择实验</div>
         <div class="marquee" id="marquee"></div>
-        <div class="zoom" id="zoomLabel">100%</div>
+        <!-- 视角控件：缩放 / 100% / 适应。整个画布也能按住空格或右键拖着平移 -->
+        <div class="viewbar" id="viewbar">
+          <button class="vb" id="btnZoomOut" title="缩小（Ctrl+-）">−</button>
+          <button class="vb pct" id="zoomLabel" title="恢复 100% 并居中（Ctrl+1）">100%</button>
+          <button class="vb" id="btnZoomIn" title="放大（Ctrl++）">＋</button>
+          <button class="vb" id="btnFit2" title="适应窗口（Ctrl+0）">⤢</button>
+        </div>
         <div class="stage-tip" data-notrans>
-          <span class="L-zh">左键框选 · Ctrl/Shift+点击加选 · 中键或 Alt+左键平移 · 滚轮缩放 · Shift+拖节点到另一个节点＝接线 · 已经接上的链路会标出两端接口名 · 空白处右键可加文本框</span>
-          <span class="L-en">Drag to box-select · Ctrl/Shift+click to multi-select · middle-drag or Alt+drag to pan · wheel to zoom · Shift+drag a node onto another to connect · links show both interface names · right-click empty space to add text boxes</span>
+          <span class="L-zh">左键框选 · <b>空格/右键拖动＝平移视角</b> · 滚轮缩放 · 方向键微移 · 中键/Alt+左键也能平移 · Shift+拖节点＝接线 · 空白右键（不拖）加文本框</span>
+          <span class="L-en">Drag to box-select · <b>Space/right-drag to pan</b> · wheel to zoom · arrow keys nudge · middle/Alt+drag also pans · Shift+drag a node to connect · right-click without dragging to add text boxes</span>
         </div>
 
         <!-- 模板库（新建节点） -->

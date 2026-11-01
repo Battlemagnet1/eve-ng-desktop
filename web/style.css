@@ -173,6 +173,27 @@ button{cursor:pointer}
 .zoom{position:absolute;right:12px;bottom:10px;font-size:11px;color:var(--txt3);
   background:var(--float);padding:2px 8px;border-radius:5px;border:1px solid var(--line)}
 
+/* 视角控件（右下角）：− 100% ＋ 适应 */
+.viewbar{
+  position:absolute;right:12px;bottom:10px;display:flex;align-items:stretch;
+  background:var(--float);border:1px solid var(--line);border-radius:7px;
+  box-shadow:var(--shadow);overflow:hidden;user-select:none;z-index:6;
+}
+.viewbar .vb{
+  display:flex;align-items:center;justify-content:center;
+  padding:3px 9px;min-width:26px;height:24px;
+  font:inherit;font-size:12px;line-height:1;color:var(--txt2);
+  background:transparent;border:0;border-left:1px solid var(--line);cursor:pointer;
+}
+.viewbar .vb:first-child{border-left:0}
+.viewbar .vb:hover{background:var(--hover);color:var(--txt-strong)}
+.viewbar .vb:active{background:var(--panel3)}
+.viewbar .vb.pct{min-width:48px;font-size:11px;color:var(--txt3);font-variant-numeric:tabular-nums}
+
+/* 平移光标：按住空格时整块画布都是抓手 */
+.stage.panmode{cursor:grab}
+.stage.panmode.dragging{cursor:grabbing}
+
 .nd{
   position:absolute;transform:translate(-50%,-50%);width:86px;
   display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;
@@ -427,7 +448,7 @@ a.btn{display:inline-block;text-decoration:none;text-align:center}
 .marquee{position:absolute;display:none;border:1px solid var(--accent);
   background:rgba(59,130,246,.12);border-radius:2px;pointer-events:none;z-index:9}
 .marquee.on{display:block}
-.stage-tip{position:absolute;left:12px;right:74px;bottom:10px;font-size:11px;color:var(--txt3);
+.stage-tip{position:absolute;left:12px;right:150px;bottom:10px;font-size:11px;color:var(--txt3);
   background:var(--float);padding:2px 8px;border-radius:5px;border:1px solid var(--line);
   pointer-events:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .linkline{stroke:#60a5fa;stroke-width:2;stroke-dasharray:5 4}

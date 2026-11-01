@@ -80,6 +80,7 @@
     '全部启动': 'Start all',
     '全部停止': 'Stop all',
     '适应窗口': 'Fit to window',
+    '恢复 100%': 'Reset to 100%',
     '重新加载': 'Reload',
     '重新加载拓扑': 'Reload topology',
     '保存并连接': 'Save & connect',
@@ -359,6 +360,11 @@
       'Drop text boxes on the topology (or right-click empty canvas)',
     '启动全部节点': 'Start all nodes',
     '停止全部节点': 'Stop all nodes',
+    /* 右下角视角控件 */
+    '缩小（Ctrl+-）': 'Zoom out (Ctrl+-)',
+    '放大（Ctrl++）': 'Zoom in (Ctrl++)',
+    '恢复 100% 并居中（Ctrl+1）': 'Reset to 100% and centre (Ctrl+1)',
+    '适应窗口（Ctrl+0）': 'Fit to window (Ctrl+0)',
 
     /* 后端错误：这些串是 Python 抛上来的，经 toast 显示，翻译放前端最省事 */
     '尚未连接服务器': 'Not connected to a server',

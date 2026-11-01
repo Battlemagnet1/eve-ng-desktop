@@ -27,6 +27,7 @@ const S = {
   showP2P: false,      // 是否把「只挂 2 个接口的直连桥」也画成图标（默认隐藏）
   texts: [],           // 拓扑文本框（存在本机，不进 EVE 的 .unl）
   tbxSel: [],          // 选中的文本框 id（框选/加选，可与节点各选各的）
+  viewReady: false,    // 当前实验的视角是否已定（定了就别再自动 fit，免得冲掉用户调的位置）
 };
 
 /* ------------------------------------------------------------------ 工具 */
@@ -293,6 +294,8 @@ async function openLab(path) {
   setLabTitle(d);
   $('#stageHint').style.display = 'none';
   renderInspector(null);
+  // 视角按实验各记一份：上次调到哪就回到哪，只有第一次打开才自动适应窗口
+  S.viewReady = loadView();
   renderTopology();
   paintSel();
   renderLabs();
@@ -438,7 +441,8 @@ function renderTopology() {
     nodesEl.appendChild(el);
   });
 
-  fit();            // 先把缩放定下来，标签的错行间距要按最终比例算
+  // 第一次画这个实验才定视角；之后（改图标、重载）保持用户自己调好的位置
+  if (!S.viewReady) { fit(); S.viewReady = true; }
   drawLinks();
   applyT();
   renderTexts();
@@ -875,24 +879,105 @@ function applyT() {
   });
 }
 
-function fit() {
-  const L = S.lab;
-  if (!L) return;
+function contentBox() {
+  const L = S.lab || {};
   const xs = [], ys = [];
   Object.values(L.nodes || {}).forEach(n => { xs.push(Number(n.left || 0)); ys.push(Number(n.top || 0)); });
   Object.values(L.networks || {}).forEach(n => { xs.push(Number(n.left || 0)); ys.push(Number(n.top || 0)); });
   (S.texts || []).forEach(t => { xs.push(Number(t.x || 0)); ys.push(Number(t.y || 0)); });
-  if (!xs.length) return;
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  if (!xs.length) return null;
+  return { minX: Math.min(...xs), maxX: Math.max(...xs),
+           minY: Math.min(...ys), maxY: Math.max(...ys) };
+}
+
+function fit() {
+  if (!S.lab) return;
+  const b = contentBox();
+  if (!b) return;
   const box = $('#stage').getBoundingClientRect();
   const pad = 90;
-  const zx = (box.width - pad * 2) / Math.max(maxX - minX, 120);
-  const zy = (box.height - pad * 2) / Math.max(maxY - minY, 90);
+  const zx = (box.width - pad * 2) / Math.max(b.maxX - b.minX, 120);
+  const zy = (box.height - pad * 2) / Math.max(b.maxY - b.minY, 90);
   S.z = Math.min(1.35, Math.max(0.25, Math.min(zx, zy)));
-  S.tx = box.width / 2 - ((minX + maxX) / 2) * S.z;
-  S.ty = box.height / 2 - ((minY + maxY) / 2) * S.z;
+  S.tx = box.width / 2 - ((b.minX + b.maxX) / 2) * S.z;
+  S.ty = box.height / 2 - ((b.minY + b.maxY) / 2) * S.z;
   applyT();
+  saveView();
+}
+
+/* ------------------------------------------------------------------ 视角
+   平移 / 缩放 / 每个实验各记一份视角。缩放锚点定在鼠标位置（按钮则锚中心），
+   这样「放大看某处」不会跑偏——这也是拓扑图最常被抱怨的地方。            */
+const VIEW_PREFIX = 'eve.view.';
+let viewTimer = 0, spaceDown = false, rightPanAt = 0;
+
+function viewKey() { return VIEW_PREFIX + (S.labPath || ''); }
+
+function saveView(now) {
+  if (!S.labPath) return;
+  clearTimeout(viewTimer);
+  const dump = () => {
+    try {
+      localStorage.setItem(viewKey(), JSON.stringify({
+        z: Math.round(S.z * 1000) / 1000,
+        tx: Math.round(S.tx), ty: Math.round(S.ty),
+      }));
+    } catch (e) { /* 隐私模式下 localStorage 会抛，忽略即可 */ }
+  };
+  if (now) dump(); else viewTimer = setTimeout(dump, 400);
+}
+
+/* 打开实验时把上次的视角读回来；没有记录就返回 false，交给 fit() */
+function loadView() {
+  if (!S.labPath) return false;
+  try {
+    const v = JSON.parse(localStorage.getItem(viewKey()) || 'null');
+    if (!v || !Number.isFinite(v.z) || v.z <= 0) return false;
+    S.z = Math.min(3, Math.max(0.15, v.z));
+    S.tx = Number(v.tx) || 0;
+    S.ty = Number(v.ty) || 0;
+    return true;
+  } catch (e) { return false; }
+}
+
+/* k = 缩放倍数；cx/cy 是屏幕坐标，省略则绕舞台中心 */
+function zoomAt(k, cx, cy) {
+  if (!S.lab) return;
+  const box = $('#stage').getBoundingClientRect();
+  const mx = (cx == null) ? box.width / 2 : cx - box.left;
+  const my = (cy == null) ? box.height / 2 : cy - box.top;
+  const z2 = Math.min(3, Math.max(0.15, S.z * k));
+  if (Math.abs(z2 - S.z) < 1e-4) return;
+  S.tx = mx - (mx - S.tx) * (z2 / S.z);
+  S.ty = my - (my - S.ty) * (z2 / S.z);
+  S.z = z2;
+  applyT();
+  saveView();
+}
+
+/* 100% 并让内容回到视野中央 */
+function zoomReset() {
+  if (!S.lab) return;
+  const b = contentBox();
+  const box = $('#stage').getBoundingClientRect();
+  S.z = 1;
+  S.tx = box.width / 2 - (b ? (b.minX + b.maxX) / 2 : 0);
+  S.ty = box.height / 2 - (b ? (b.minY + b.maxY) / 2 : 0);
+  applyT();
+  saveView();
+}
+
+function panBy(dx, dy) {
+  if (!S.lab) return;
+  S.tx += dx; S.ty += dy;
+  applyT();
+  saveView();
+}
+
+/* 焦点在输入框里时别抢键 */
+function typing() {
+  const a = document.activeElement;
+  return !!(a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)));
 }
 
 /* ------------------------------------------------------------------ 检查器 */
@@ -1896,6 +1981,10 @@ function bind() {
   };
 
   $('#btnFit').onclick = fit;
+  $('#btnFit2').onclick = fit;
+  $('#btnZoomIn').onclick = () => zoomAt(1.2);
+  $('#btnZoomOut').onclick = () => zoomAt(1 / 1.2);
+  $('#zoomLabel').onclick = zoomReset;
   $('#btnP2P').onclick = () => {
     S.showP2P = !S.showP2P;
     $('#btnP2P').classList.toggle('on', S.showP2P);
@@ -1966,10 +2055,17 @@ function bind() {
   const ndEl = id => document.querySelector(`.nd[data-id="${id}"]`);
 
   stage.addEventListener('mousedown', e => {
+    // 右键先当「平移候选」：真的拖了才平移，没拖就是普通右键菜单（节点/文本框上也一样）
+    if (e.button === 2) {
+      pan = { x: e.clientX, y: e.clientY, tx: S.tx, ty: S.ty, btn: 2, moved: false };
+      stage.classList.add('dragging');
+      return;
+    }
     if (e.target.closest('.nd') || e.target.closest('.net') || e.target.closest('.tbx')) return;
-    if (e.button === 1 || (e.button === 0 && e.altKey)) {          // 平移
+    // 平移视角：中键 / Alt+左键 / 按住空格+左键
+    if (e.button === 1 || (e.button === 0 && (e.altKey || spaceDown))) {
       e.preventDefault();
-      pan = { x: e.clientX, y: e.clientY, tx: S.tx, ty: S.ty };
+      pan = { x: e.clientX, y: e.clientY, tx: S.tx, ty: S.ty, btn: e.button, moved: false };
       stage.classList.add('dragging');
       return;
     }
@@ -2110,8 +2206,12 @@ function bind() {
       return;
     }
     if (pan) {
-      S.tx = pan.tx + (e.clientX - pan.x);
-      S.ty = pan.ty + (e.clientY - pan.y);
+      const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
+      if (!pan.moved && Math.abs(dx) + Math.abs(dy) < 3) return;
+      pan.moved = true;
+      if (pan.btn === 2) rightPanAt = Date.now();  // 右键拖动过 → 松手别弹菜单
+      S.tx = pan.tx + dx;
+      S.ty = pan.ty + dy;
       applyT();
       return;
     }
@@ -2148,6 +2248,10 @@ function bind() {
   });
 
   window.addEventListener('mouseup', e => {
+    if (pan && pan.moved) {                 // 平移结束才落一次盘，拖的过程中不写 localStorage
+      if (pan.btn === 2) rightPanAt = Date.now();
+      saveView();
+    }
     pan = null;
     stage.classList.remove('dragging');
 
@@ -2337,15 +2441,40 @@ function bind() {
   stage.addEventListener('wheel', e => {
     if (!S.lab) return;
     e.preventDefault();
-    const box = stage.getBoundingClientRect();
-    const mx = e.clientX - box.left, my = e.clientY - box.top;
-    const k = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    const z2 = Math.min(3, Math.max(0.15, S.z * k));
-    S.tx = mx - (mx - S.tx) * (z2 / S.z);
-    S.ty = my - (my - S.ty) * (z2 / S.z);
-    S.z = z2;
-    applyT();
+    // 触控板横向两指、Shift+滚轮 → 平移；其余（鼠标滚轮、Ctrl+滚轮）→ 以光标为中心缩放
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY) && !e.ctrlKey) { panBy(-e.deltaX, 0); return; }
+    if (e.shiftKey) { panBy(-e.deltaY, 0); return; }
+    zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY);
   }, { passive: false });
+
+  /* 视角键盘：按住空格＝抓手（左键拖动平移）；方向键推视角；Ctrl+0/1/± */
+  const VIEW_STEP = { ArrowLeft: [1, 0], ArrowRight: [-1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] };
+  const focusOnCanvas = el => !el || el === document.body || stage.contains(el);
+  window.addEventListener('keydown', e => {
+    if (typing() || document.querySelector('.modal-mask')) return;
+    if (e.code === 'Space' && focusOnCanvas(document.activeElement)) {
+      e.preventDefault();                       // 空格默认会滚页/触发聚焦按钮
+      if (!spaceDown) { spaceDown = true; stage.classList.add('panmode'); }
+      return;
+    }
+    if (VIEW_STEP[e.key] && S.lab) {
+      e.preventDefault();
+      const st = e.shiftKey ? 260 : 80;
+      panBy(VIEW_STEP[e.key][0] * st, VIEW_STEP[e.key][1] * st);
+      return;
+    }
+    if (!(e.ctrlKey || e.metaKey) || !S.lab) return;
+    if (e.key === '0') { e.preventDefault(); fit(); }
+    else if (e.key === '1') { e.preventDefault(); zoomReset(); }
+    else if (e.key === '=' || e.key === '+') { e.preventDefault(); zoomAt(1.2); }
+    else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomAt(1 / 1.2); }
+  });
+  window.addEventListener('keyup', e => {
+    if (e.code !== 'Space') return;
+    spaceDown = false;
+    stage.classList.remove('panmode');
+  });
+  window.addEventListener('blur', () => { spaceDown = false; stage.classList.remove('panmode'); });
 
   // Delete / Backspace 删掉选中的文本框；正在输入框里打字时不拦
   window.addEventListener('keydown', e => {
@@ -2389,6 +2518,12 @@ function bind() {
   // 右键菜单：网络 / 节点（单选或多选）/ 画布空白
   stage.addEventListener('contextmenu', e => {
     if (!S.lab) return;
+    // 刚用右键拖过画布＝在平移视角，松手别弹菜单
+    if ((pan && pan.btn === 2 && pan.moved) || Date.now() - rightPanAt < 400) {
+      e.preventDefault();
+      rightPanAt = 0;
+      return;
+    }
     const tbxEl = e.target.closest('.tbx');
     const netEl = e.target.closest('.net');
     const nd = e.target.closest('.nd');
@@ -2423,6 +2558,7 @@ function bind() {
           paintSel(); syncInspector().catch(() => {});
         }],
         ['适应窗口', () => fit()],
+        ['恢复 100%', () => zoomReset()],
         ['重新加载', () => S.labPath && openLab(S.labPath).catch(fail)],
       ]);
       return;

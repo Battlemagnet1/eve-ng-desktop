@@ -19,7 +19,7 @@ It is not an image repository and does not download images — images are only i
 | Area | What it does |
 |---|---|
 | Labs | Folder tree browsing, switching, deep links `#lab=<path>`, **new lab** (sidebar “+ New”: name / folder / description, opens automatically) |
-| Topology | Canvas rendering of nodes, links and clouds; box-select, Ctrl/Shift multi-select, middle-drag or Alt+drag to pan, wheel zoom, fit to window, context menus, 3-second status polling |
+| Topology | Canvas rendering of nodes, links and clouds; box-select, Ctrl/Shift multi-select, **right-drag / Space-drag / middle-drag / Alt+drag to pan**, wheel zoom, fit to window, per-lab view memory, context menus, 3-second status polling |
 | Topology editing | Add nodes from templates (name / image / RAM / NIC count), drag to move (multi-select moves together), batch start-stop-delete, rename, create and delete networks, connect ports with interface names drawn on the links; writes carry `umtime` so they never clobber changes made in the EVE web UI |
 | Node icons | Three optional shapes: **circle = router / horizontal bar = switch / vertical bar = firewall** (context menu or inspector, can be applied to a multi-selection) |
 | Nodes | Start / stop / wipe, whole-lab batch start-stop, property view, NIC wiring editor, create cloud |
@@ -217,9 +217,9 @@ The canvas follows EVE's own habits:
 | Add node | Toolbar “+ Node” / right-click empty canvas → “Add node…” → template list (only templates with an installed image are selectable). Drag onto the canvas to place at the drop point, or click to drop it in the centre; a properties dialog follows |
 | Editable properties | Name (auto-numbered, e.g. R6), image, RAM (MB), NIC count, serial count |
 | Selection | Click to select; `Ctrl`/`Shift`+click to add; **drag on empty space = box select** (live highlight) |
-| Pan / zoom | Middle-drag or `Alt`+left-drag; wheel to zoom |
+| Pan / zoom | **Right-drag, Space+left-drag, middle-drag or `Alt`+left-drag** to pan; wheel zooms around the cursor; the `− 100% ＋ ⤢` control sits bottom-right; arrow keys nudge. **Each lab remembers its own view** |
 | Moving | Drag a node; a multi-selection moves together. Dragging only changes local coordinates — it is written back to EVE **on release** |
-| Right-click (empty) | **Add text boxes…** / Add node… / Add network (cloud)… / Select all nodes / Fit / Reload |
+| Right-click (empty) | **Add text boxes…** / Add node… / Add network (cloud)… / Select all nodes / Fit / Reset to 100% / Reload |
 | Right-click (node) | CLI console, start, stop, properties…, **icon…**, link to network…, capture…, wipe, delete |
 | Right-click (multi) | Batch start / stop / wipe / delete, bulk connect, **uniform icon…**, clear selection |
 | Right-click (network) | Rename, delete |
@@ -230,6 +230,22 @@ The canvas follows EVE's own habits:
 - **Concurrency guard**: every write carries the lab file's `umtime`. If you changed the same
   lab in the EVE web UI, the write is refused with “please reload first” — refusing to write
   beats silently overwriting each other.
+
+### View (pan / zoom)
+
+| Want to | How |
+|---|---|
+| Pan | **Right-drag**, **hold Space + left-drag**, middle-drag, or `Alt`+left-drag. A right-*click* without dragging still opens the context menu |
+| Zoom | Wheel (anchored at the cursor, so zooming in never drifts), `＋` / `−` bottom-right, `Ctrl`+`=` / `Ctrl`+`-` |
+| Back to 100% | Click the percentage bottom-right, or `Ctrl`+`1` |
+| Fit to window | Toolbar “Fit”, the `⤢` button, or `Ctrl`+`0` |
+| Small nudges | Arrow keys (80 px per press), `Shift`+arrow for 260 px |
+| Trackpad | Two-finger vertical = zoom; two-finger horizontal = pan; `Shift`+wheel = pan |
+
+**Each lab remembers its own view** (`localStorage` key `eve.view.<lab path>`): adjust it, close
+the lab or restart the app, and you come back to the same spot. Only the first time a lab is
+opened does it auto-fit, and redraws (icon changes, reloads) no longer throw the view away.
+Click “Fit” whenever you want it re-fitted.
 
 ### New lab
 
@@ -458,7 +474,7 @@ web/                front end (xterm.js vendored locally, i18n.js for language/t
 | A capture saved 0 packets | That link really was idle. Make a device ping first |
 | Wireshark not found | Install [Wireshark](https://www.wireshark.org/); the file is already saved and its path is shown |
 | `tcpdump: command not found` | `apt-get install -y tcpdump` on the server |
-| Dragging pans the canvas instead of moving a node | Left-drag on empty space is box-select (EVE habit); pan with **middle-drag** or `Alt`+left-drag |
+| Dragging pans the canvas instead of moving a node | Left-drag on empty space is box-select (EVE habit); pan with **right-drag**, **hold Space and drag**, middle-drag or `Alt`+left-drag |
 | `% Invalid input at '^'` after typing | Old bug with NAWS before negotiation. Fixed |
 
 ---
