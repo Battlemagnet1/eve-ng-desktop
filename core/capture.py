@@ -141,6 +141,28 @@ def wireshark_exe():
     return None
 
 
+# Wireshark 官网下载页。安装包里原先那个「在线下载」已经废掉了：连
+# 2.na.dl.wireshark.org / 1.eu.dl.wireshark.org 在国内基本超时，装到一半弹
+# 「下载失败」比不提供还难受。现在只给页面链接，用户自己在浏览器里下
+# （能走代理、能挑镜像），装完回来这里就能认出来。
+WIRESHARK_URL = "https://www.wireshark.org/download.html"
+
+
+def wireshark_info():
+    """本机 Wireshark 状态。前端据此决定要不要提示「还没装」。"""
+    exe = wireshark_exe()
+    return {"installed": bool(exe), "exe": exe, "url": WIRESHARK_URL}
+
+
+def open_wireshark_download():
+    """用系统浏览器打开 Wireshark 下载页（不走应用内的窗口）。"""
+    try:
+        os.startfile(WIRESHARK_URL)
+    except OSError as e:
+        raise CapError("打不开浏览器（%s）。手动访问：%s" % (str(e)[:80], WIRESHARK_URL))
+    return {"opened": True, "url": WIRESHARK_URL}
+
+
 def _link_names(remote):
     """服务器上所有网卡名。`ip -o link` 的 `vun001000000100@if7` 要切掉 @ 那一截。"""
     rc, out, _e = remote.run(
@@ -363,7 +385,8 @@ class Manager:
                 s.ws = None
                 s.note = "本机 Wireshark 启动失败（%s），只在本机存文件" % str(ex)[:80]
         else:
-            s.note = "本机没找到 Wireshark，只在本机存文件（装好后再点「用 Wireshark 打开」）"
+            s.note = ("本机没装 Wireshark —— 包照样实时存到本机，装好后点"
+                      "「用 Wireshark 打开」就能看")
 
         cmd = "exec tcpdump -i %s -s %d -U -n -w - %s" % (tap, int(snaplen or 0), bpf)
         try:

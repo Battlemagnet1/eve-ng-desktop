@@ -1,16 +1,27 @@
 ; EVE Desktop 安装包脚本（Inno Setup 6.3+）
-; 构建：把 dist-app\EVE-Desktop\ 整个目录打进安装包，
-; 可选组件「Wireshark」在安装时从官方镜像在线下载并静默安装。
+; 构建：把 dist\EVE-Desktop\ 整个目录打进安装包。
 ;
 ;   ISCC.exe EVE-Desktop.iss
+;
+; 关于 Wireshark（抓包用）：**不在这里在线下载**。
+; 早期版本勾了「安装 Wireshark」就从 dl.wireshark.org 拉 90MB 的安装器，国内基本
+; 连不上，于是装到一半弹「Wireshark 下载失败（可能没有联网）」—— 装是装上了，
+; 但那个框看着像安装失败。现在改成两条路，都不需要联网：
+;   a) 把官方安装器重命名成 installer\vendor\Wireshark-x64.exe，构建时自动随包，
+;      安装时离线静默装（有这个文件才会出现「安装 Wireshark」这个选项）
+;   b) 没随包时，安装完成页多一条「打开 Wireshark 下载页」，勾了才开浏览器；
+;      本机已装则这条不显示。应用里抓包面板也有同一个入口。
 
 #define MyAppName "EVE Desktop"
-#define MyAppVersion "0.3.0"
+#define MyAppVersion "0.3.1"
 #define MyAppExeName "EVE-Desktop.exe"
 
-; Wireshark 官方「latest」直链（三个镜像轮换，Wireshark-latest-x64.exe 永远指向当前稳定版）
-#define WiresharkUrl1 "https://2.na.dl.wireshark.org/win64/Wireshark-latest-x64.exe"
-#define WiresharkUrl2 "https://1.eu.dl.wireshark.org/win64/Wireshark-latest-x64.exe"
+; 离线 Wireshark：放进来就随包（体积 +~90MB），不放就没有这个选项
+#define WiresharkBundle "vendor\Wireshark-x64.exe"
+#define WiresharkName "Wireshark-x64.exe"
+#if FileExists(SourcePath + WiresharkBundle)
+  #define HAVE_WS
+#endif
 
 [Setup]
 AppId={{8E2B6A21-5B1D-4C0A-9F3E-1A7D52C90E11}
@@ -36,15 +47,20 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 Name: "desktopicon"; \
     Description: "创建桌面快捷方式(&D)"; \
     GroupDescription: "附加任务："
+#ifdef HAVE_WS
 Name: "wireshark"; \
-    Description: "安装 Wireshark（抓包用，约 93MB，安装时需联网下载；已装则自动跳过）(&W)"; \
-    GroupDescription: "附加组件："; \
-    Flags: unchecked
+    Description: "安装 Wireshark（抓包用，随包离线安装，不联网；已装则跳过）(&W)"; \
+    GroupDescription: "附加组件："
+#endif
 
 [Files]
 Source: "..\dist\EVE-Desktop\*"; \
     DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
+#ifdef HAVE_WS
+Source: "{#WiresharkBundle}"; \
+    DestDir: "{tmp}"; Flags: dontcopy
+#endif
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -55,86 +71,66 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; \
     Description: "启动 {#MyAppName}"; \
     Flags: nowait postinstall skipifsilent
+; 没随包 Wireshark 时的软提示：只是打开官网页面，下载与否由用户在浏览器里决定
+Filename: "https://www.wireshark.org/download.html"; \
+    Description: "打开 Wireshark 下载页（抓包要用；本机已装则不会出现）"; \
+    Flags: postinstall shellexec nowait unchecked; \
+    Check: not WiresharkInstalled
 
 [Code]
-// ---------- Wireshark 检测：装过就不再下 ----------
+// ---------- 本机有没有 Wireshark ----------
+// 和 core/capture.py 的 wireshark_exe() 保持同一套判断，别一边认一边不认
 function WiresharkInstalled(): Boolean;
 var
   p: string;
 begin
   Result := False;
-  // 先看注册表（官方安装器会写）
   if RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Wireshark',
        'InstallLocation', p) and (p <> '') and FileExists(AddBackslash(p) + 'Wireshark.exe') then begin
     Result := True;
     exit;
   end;
-  // 再看常见安装位置（capture.py 的 wireshark_exe() 找的就是这几处）
+  // 64 位安装器写在 64 位视图里
+  if IsWin64 and RegQueryStringValue(HKLM64, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Wireshark',
+       'InstallLocation', p) and (p <> '') and FileExists(AddBackslash(p) + 'Wireshark.exe') then begin
+    Result := True;
+    exit;
+  end;
+  // 注册表没有就看常见安装位置
   if FileExists('C:\Program Files\Wireshark\Wireshark.exe') or
      FileExists('C:\Program Files (x86)\Wireshark\Wireshark.exe') or
-     FileExists(AddBackslash(ExpandConstant('{userappdata}')) + 'Programs\Wireshark\Wireshark.exe') then
+     FileExists(AddBackslash(ExpandConstant('{localappdata}')) + 'Programs\Wireshark\Wireshark.exe') then
     Result := True;
 end;
 
-// 依次尝试多个镜像，全部失败返回 False（不拦安装）
-function DownloadWireshark(var Path: string): Boolean;
-begin
-  Result := False;
-  WizardForm.StatusLabel.Caption := '正在下载 Wireshark（约 93MB，视网速需要几分钟）…';
-  try
-    Path := ExpandConstant('{tmp}\Wireshark-setup.exe');
-    try
-      DownloadTemporaryFile('{#WiresharkUrl1}', Path, '', nil);
-      Result := True;
-    except
-      // 镜像 1 失败 → 试镜像 2
-      try
-        DownloadTemporaryFile('{#WiresharkUrl2}', Path, '', nil);
-        Result := True;
-      except
-        Result := False;
-      end;
-    end;
-  finally
-    WizardForm.StatusLabel.Caption := '';
-  end;
-end;
-
 procedure CurStepChanged(CurStep: TSetupStep);
+#ifdef HAVE_WS
 var
-  Path: string;
+  ExePath: string;
   ResultCode: Integer;
+#endif
 begin
   if CurStep <> ssPostInstall then exit;
+#ifdef HAVE_WS
   if not WizardIsTaskSelected('wireshark') then exit;
   if WiresharkInstalled() then begin
     Log('Wireshark 已安装，跳过');
     exit;
   end;
 
-  if not DownloadWireshark(Path) then begin
-    // 不联网/镜像全挂：不打断安装，提示抓包功能需手动装 Wireshark
-    MsgBox('Wireshark 下载失败（可能没有联网）。' #13#10
-           'EVE Desktop 已安装完成；以后需要抓包时，请到 https://www.wireshark.org 手动安装 Wireshark。',
-           mbInformation, MB_OK);
-    exit;
-  end;
-
   WizardForm.StatusLabel.Caption := '正在安装 Wireshark…';
   try
+    ExtractTemporaryFile('{#WiresharkName}');
+    ExePath := ExpandConstant('{tmp}\{#WiresharkName}');
     // Wireshark 官方安装器是 NSIS 包：/S 静默
-    if Exec(Path, '/S', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then begin
-      if not WiresharkInstalled() then
-        Log('Wireshark 安装器退出码 ' + IntToStr(ResultCode) + '，但未检测到安装');
-    end else
-      MsgBox('Wireshark 安装程序启动失败，可以以后到 https://www.wireshark.org 手动安装。',
-             mbInformation, MB_OK);
+    if not Exec(ExePath, '/S', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then
+      MsgBox('Wireshark 安装程序没能启动。' #13#10
+             'EVE Desktop 已经装好了，抓包可以把包存到本机，以后手动装 Wireshark 也能用。',
+             mbInformation, MB_OK)
+    else if not WiresharkInstalled() then
+      Log('Wireshark 安装器退出码 ' + IntToStr(ResultCode) + '，但没检测到安装');
   finally
     WizardForm.StatusLabel.Caption := '';
   end;
-end;
-
-function InitializeSetup(): Boolean;
-begin
-  Result := True;
+#endif
 end;

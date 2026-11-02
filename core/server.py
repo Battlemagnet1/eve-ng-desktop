@@ -766,6 +766,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, **a.templates()})
         if path == "/api/captures":
             return self._json({"ok": True, "items": a.caps.list(), "dir": a.capture_dir()})
+        if path == "/api/wireshark":
+            return self._json({"ok": True, **capture.wireshark_info()})
         if path == "/api/term/stream":
             return self._term_stream(q)
         if path == "/api/term/list":
@@ -846,6 +848,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, **a.caps.discard(_req(body, "sid", "抓包会话"))})
         if path == "/api/capture/open":
             return self._json({"ok": True, **capture.open_local(body.get("file") or "")})
+        if path == "/api/wireshark/download":
+            # 只开固定这一个网址，不接受前端传 URL —— 本地接口别变成通用「打开任意链接」
+            return self._json({"ok": True, **capture.open_wireshark_download()})
         if path == "/api/lab/action":
             a.require()
             action = _req(body, "action", "动作")

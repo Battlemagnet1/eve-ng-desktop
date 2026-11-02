@@ -1504,8 +1504,23 @@ async function toggleCapPanel(on) {
   clearInterval(S.capTimer);
   S.capTimer = null;
   if (!open) return;
+  await refreshWs();
   await refreshCaps().catch(fail);
   S.capTimer = setInterval(() => { if (!document.hidden) refreshCaps().catch(() => {}); }, 2000);
+}
+
+/* 本机有没有 Wireshark。没装不影响抓包（pcap 是实时写本机文件的），
+   但得让人知道去哪儿装 —— 安装包里那套「安装时在线下载」已经去掉了：
+   官网镜像在国内基本连不上，反而在装到一半时弹个失败框。 */
+async function refreshWs() {
+  try { S.ws = await api('/api/wireshark'); } catch (e) { S.ws = null; }
+}
+
+async function getWireshark() {
+  try {
+    await api('/api/wireshark/download', { method: 'POST', body: {} });
+    toast('已在浏览器打开 Wireshark 下载页；装好后回到这里点「用 Wireshark 打开」', 'ok', 6000);
+  } catch (e) { fail(e); }
 }
 
 async function refreshCaps() {
@@ -1518,12 +1533,18 @@ async function refreshCaps() {
 function renderCaps() {
   const box = $('#capList');
   const items = S.caps || [];
+  const ws = S.ws || {};
+  const miss = ws.installed === false
+    ? '<div class="cap-wsmiss">'
+      + '<span>本机还没装 Wireshark：抓包照常，包实时存到本机，装好后点「用 Wireshark 打开」看回放</span>'
+      + '<button class="mini" id="capGetWs">去官网下载</button></div>'
+    : '';
   if (!items.length) {
-    box.innerHTML = '<div class="empty">还没有在抓的会话<br><span style="opacity:.6">'
+    box.innerHTML = miss + '<div class="empty">还没有在抓的会话<br><span style="opacity:.6">'
       + '右键节点或检查器里的「抓包」开始</span></div>';
     return;
   }
-  box.innerHTML = items.map(c => `
+  box.innerHTML = miss + items.map(c => `
     <div class="cap-item" data-sid="${esc(c.sid)}">
       <div class="cap-top"><b>${esc(c.node)}</b> · ${esc(c.iface)}
         <span class="cap-tag">${esc(c.ifname)}</span></div>
@@ -2227,6 +2248,7 @@ function bind() {
     e.dataTransfer.effectAllowed = 'copy';
   });
   $('#capList').onclick = e => {
+    if (e.target.closest('#capGetWs')) { getWireshark(); return; }
     const openLast = e.target.closest('#capOpenLast');
     if (openLast && S.lastPcap) { openPcap(S.lastPcap); return; }
     const b = e.target.closest('[data-cap-act]');

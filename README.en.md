@@ -42,9 +42,16 @@ It is not an image repository and does not download images — images are only i
 Run `installer/Output/EVE-Desktop-Setup-<version>.exe`:
 
 - All runtimes are bundled (PyInstaller), so it just works — no Python, no pip
-- The wizard offers “**Install Wireshark**”, downloading it live from the official mirror
-  (~93 MB) and installing silently; skipped automatically if already present, and you can add it later
-- The installer is roughly 15 MB; capture works without Wireshark too (it just writes the pcap locally)
+- **Wireshark is never downloaded during setup**: the official mirrors are unreachable from
+  much of the world (China especially), and a half-way “download failed” dialog looks like the
+  install itself broke. When Wireshark is absent, the finish page offers an “open the Wireshark
+  download page” checkbox (only opens your browser, hidden when already installed); the capture
+  panel in the app has the same entry
+- Want the setup to **bundle** Wireshark (offline, ~90 MB larger)? Drop the official installer
+  in as `installer/vendor/Wireshark-x64.exe` before building — the wizard then offers
+  “Install Wireshark” and installs it silently with no network
+- The installer is roughly 15 MB; capture works without Wireshark too (the pcap is written
+  locally in real time)
 
 ### Option 2: run from source
 
@@ -120,10 +127,19 @@ installer\build-installer.bat        # run from anywhere, it finds the venv itse
 ```
 
 Two steps: PyInstaller produces `dist/EVE-Desktop/` (`EVE-Desktop.spec`), then Inno Setup
-6.3+ (`installer/EVE-Desktop.iss`) compresses it into the setup. Wireshark is not bundled —
-it is downloaded and installed silently at setup time from the official mirror
-(`Wireshark-latest-x64.exe` direct link, with a second mirror as fallback). The Chinese
-wizard uses `installer/ChineseSimplified.isl`.
+6.3+ (`installer/EVE-Desktop.iss`) compresses it into the setup. The Chinese wizard uses
+`installer/ChineseSimplified.isl`.
+
+Wireshark is **not** downloaded at setup time (it used to be `DownloadTemporaryFile` against
+the official mirrors, which usually times out — a “download failed” dialog is worse than no
+option at all). Instead:
+
+- By default nothing is bundled: the finish page offers “open the Wireshark download page”
+  (`Check: not WiresharkInstalled`, hidden when already installed)
+- For an offline setup, rename the official installer to `installer/vendor/Wireshark-x64.exe`
+  before building; `#if FileExists(...)` in the `.iss` switches on the bundled branch — the
+  wizard offers “Install Wireshark” and installs it silently, no network. `vendor/` is
+  gitignored so the 90 MB file never lands in the repo
 
 The build script first makes sure it is running the **project venv** (it fails loudly if
 `paramiko` or `pywebview` is missing instead of silently falling back to the system
@@ -515,9 +531,11 @@ each NIC in the inspector. The bottom-left panel shows live **packet count / siz
 per session and has “Stop & save”.
 
 - Only **running** nodes can be captured (EVE creates the tap at start); you get a clear message otherwise
+- Without Wireshark nothing fails: the pcap is still written and its path is shown. The capture
+  panel adds a “**Get Wireshark**” button (opens your system browser, so you can pick a mirror or
+  use a proxy) — the setup wizard never downloads it for you
 - Filters use BPF syntax, e.g. `tcp port 80`, `icmp`, `host 10.0.0.1`; only ordinary
   characters are accepted (no `;` or `$`) to keep the command injection-free
-- Without Wireshark installed nothing fails: the file is still written and its path is shown
 
 ## Internet access
 

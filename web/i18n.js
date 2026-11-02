@@ -353,6 +353,16 @@
       'Capturing · Wireshark is open and streaming',
     '抓包中（没找到 Wireshark，只在本机存文件）':
       'Capturing (Wireshark not found; saving to a local file)',
+    '本机还没装 Wireshark：抓包照常，包实时存到本机，装好后点「用 Wireshark 打开」看回放':
+      'Wireshark is not installed: capture still works and the pcap is saved locally — '
+      + 'install Wireshark, then use “Open in Wireshark” to replay it',
+    '去官网下载': 'Get Wireshark',
+    '已在浏览器打开 Wireshark 下载页；装好后回到这里点「用 Wireshark 打开」':
+      'Opened the Wireshark download page in your browser; '
+      + 'once installed, come back and use “Open in Wireshark”',
+    '本机没装 Wireshark —— 包照样实时存到本机，装好后点「用 Wireshark 打开」就能看':
+      'Wireshark is not installed — the pcap is still saved locally; '
+      + 'install it and use “Open in Wireshark”',
     '已停止，共 {} 个包（{}），文件已存到本机':
       'Stopped: {} packets ({}), saved locally',
     '个包 · {} · {}s{}': 'packets · {} · {}s{}',

@@ -11,6 +11,8 @@ venv/
 # 安装包构建产物
 installer/Output/
 installer/test-install/
+# 想随包离线安装的 Wireshark 安装器放这里（约 90MB，绝不入库）
+installer/vendor/
 
 # 运行时产物：含服务器地址与账号信息，绝不提交
 config.json

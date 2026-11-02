@@ -42,9 +42,13 @@ EVE-NG 桌面客户端：把网页版的**实验/拓扑浏览、节点操控、�
 运行 `installer/Output/EVE-Desktop-Setup-<版本>.exe`：
 
 - 内置全部运行时（PyInstaller 打包），装完即用，不需要 Python 和 pip
-- 安装向导里可选「**安装 Wireshark**」——安装时从 Wireshark 官方镜像在线下载
-  （约 93MB）并静默安装，已装过会自动跳过；不勾选也随时可以后补
-- 安装包本身约 15MB；抓包功能没有 Wireshark 也能用（只在本机存 pcap 文件）
+- **安装时不会联网下载 Wireshark**：官方镜像在国内基本连不上，装到一半弹「下载失败」
+  反而像是安装出了问题。本机没有 Wireshark 时，安装完成页会多一条「打开 Wireshark
+  下载页」（勾了才开浏览器，本机已装则不显示）；应用里的抓包面板也有同一个入口
+- 想让安装包**自带** Wireshark（离线可用，包体 +约 90MB）：把官方安装器重命名成
+  `installer/vendor/Wireshark-x64.exe` 再打包，安装向导就会出现「安装 Wireshark」，
+  勾上直接离线静默安装（已装过自动跳过）
+- 安装包本身约 15MB；没装 Wireshark 也能抓包（包实时存在本机，装好后再打开看回放）
 
 ### 方式二：源码运行
 
@@ -123,9 +127,17 @@ installer\build-installer.bat        # 在哪个目录运行都行，脚本自�
 ```
 
 两步：PyInstaller 打出 `dist/EVE-Desktop/`（`EVE-Desktop.spec`），再由
-Inno Setup 6.3+（`installer/EVE-Desktop.iss`）压成安装包。Wireshark 不打进包，
-安装时按勾选从官方镜像在线下载静默安装（`Wireshark-latest-x64.exe` 永久直链，
-双镜像容错）。中文界面用 `installer/ChineseSimplified.isl`（官方仓库 Unofficial 翻译）。
+Inno Setup 6.3+（`installer/EVE-Desktop.iss`）压成安装包。中文界面用
+`installer/ChineseSimplified.isl`（官方仓库 Unofficial 翻译）。
+
+Wireshark **不在安装时下载**（原先是 `DownloadTemporaryFile` 拉官方直链，国内基本超时，
+弹「下载失败」比不提供更糟）。现在的做法：
+
+- 默认不随包：安装完成页多一条「打开 Wireshark 下载页」（`Check: not WiresharkInstalled`，
+  本机已装则不显示），勾了才开浏览器
+- 需要离线包时：把官方安装器重命名成 `installer/vendor/Wireshark-x64.exe` 放进去，
+  `.iss` 里 `#if FileExists(...)` 会自动打开随包分支 —— 安装向导出现「安装 Wireshark」，
+  静默安装，全程不联网。`vendor/` 已进 `.gitignore`，不会把 90MB 提交上去
 
 打包脚本会先确认用的是**项目 venv**（缺 `paramiko` 或 `pywebview` 直接报错，不会偷偷
 退回系统 python），打完再跑 `installer/smoke_test.py`：以 `--no-gui` 起一次 exe，
@@ -477,7 +489,8 @@ EVE 网页版那个抓包按钮用的是 `capture://<host>/vunl0_1_0` 自定义�
 - 只能抓**运行中**的节点（EVE 只在运行态建 tap），节点没起来会直接提示
 - 过滤器按 BPF 语法填，例如 `tcp port 80`、`icmp`、`host 10.0.0.1`；
   为避免命令注入，只接受常规字符，出现 `;` `$` 之类会拒绝
-- 本机没装 Wireshark 时不会报错，会照样落盘并告诉你文件在哪，装好再双击也行
+- 本机没装 Wireshark 时不会报错，会照样落盘并告诉你文件在哪，装好再双击也行；
+  抓包面板顶部会多一条提示和「**去官网下载**」按钮（走系统浏览器，能自己挑镜像/走代理）
 
 ## 外网出口怎么配
 
