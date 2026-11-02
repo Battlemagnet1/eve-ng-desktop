@@ -13,8 +13,9 @@
      文件本来就在本地持续写，所以停止后不需要回传，直接可用。
   4. 用户直接关掉 Wireshark 窗口 → 写管道失败 → 自动结束抓包并保留文件
 
-接口 → tap 的对应关系：
-  节点网卡 e0/0 → 宿主机 tap `vunl{tenant}_{node_id}_{接口ID}`
+接口 → tap 的对应关系（两个大版本各一套，见 tap_name / tap_name_legacy）：
+  EVE 6.x：`vunl{tenant}_{node_id}_{接口ID}`
+  EVE 7.x：`vun{lab_id:03x}{tenant:04x}{node_id:03x}{接口ID:02x}`
   接口 ID 不是序号：e0/0=0、e0/1=16、e0/2=32……（EVE 每块网卡占 16 个槽）
 """
 import os
@@ -28,15 +29,60 @@ CHUNK = 1 << 16
 _BPF_OK = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .:()_-/!<>=&|")
 
 
-class CapError(Exception):
+class CapError(ValueError):
+    """抓包失败。继承 ValueError 是为了复用 server 的 400 映射 ——
+    否则前端会拿到 `CapError: 网卡 xxx 不存在` 这种带类名的技术文案。"""
+
     def __init__(self, msg):
         super().__init__(msg)
         self.message = str(msg)
 
 
-def tap_name(tenant, node_id, ifid):
-    """EVE 里网卡的 tap 名。ifid 用 /nodes/{id}/interfaces 里 ethernet 的键。"""
+def _hexw(v, width):
+    """EVE 前端 `("000" + v.toString(16)).slice(-width)` 的等价物。
+
+    定宽小写十六进制、超出就取低位 —— 必须跟着前端走，不能按十进制补零，
+    否则 e0/1（接口 ID 16）会写成 016 而服务器上是 10。
+    """
+    try:
+        s = "%x" % int(v)
+    except (TypeError, ValueError):
+        s = "0"
+    return ("0" * width + s)[-width:]
+
+
+def tap_name(tenant, node_id, ifid, lab_id=1, vpcs=False):
+    """EVE 7.x 的 tap 名，ifid 用 /nodes/{id}/interfaces 里 ethernet 的键。
+
+    拼法照抄 7.2 前端 labview 里生成 realname 的那段：
+        "000"+lab_id.toString(16)  取后 3 位
+      + "0000"+tenant.toString(16) 取后 4 位
+      + "000"+node.id.toString(16) 取后 3 位
+      + "00"+if.id.toString(16)    取后 2 位
+    实测 Pro 7.2.0-4：lab 1 / tenant 0 / 节点 1 的四个口是
+    vun001000000100 …… vun001000000133（e1/0 的 16 写成 hex 的 10）。
+    """
+    b = 255 if (vpcs and int(ifid) == 0) else int(ifid)
+    return ("vun" + _hexw(lab_id, 3) + _hexw(tenant, 4)
+            + _hexw(node_id, 3) + _hexw(b, 2))
+
+
+def tap_name_legacy(tenant, node_id, ifid):
+    """EVE 6.x 的 tap 名：`vunl{tenant}_{node_id}_{ifid}`。"""
     return "vunl%s_%s_%s" % (int(tenant or 0), int(node_id), int(ifid))
+
+
+def tap_candidates(tenant, node_id, ifid, lab_id=1, vpcs=False):
+    """两代命名都试一遍，新版本优先。
+
+    版本号靠不住（6.2 的 pro 包、7.2 的 CE 包都见过），与其判版本，
+    不如把两个名字拿去服务器上问一句「有没有这块网卡」。
+    """
+    out = [tap_name(tenant, node_id, ifid, lab_id, vpcs)]
+    old = tap_name_legacy(tenant, node_id, ifid)
+    if old not in out:
+        out.append(old)
+    return out
 
 
 def _check_bpf(bpf):
@@ -93,6 +139,42 @@ def wireshark_exe():
         if c and os.path.isfile(c):
             return c
     return None
+
+
+def _link_names(remote):
+    """服务器上所有网卡名。`ip -o link` 的 `vun001000000100@if7` 要切掉 @ 那一截。"""
+    rc, out, _e = remote.run(
+        "ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1")
+    return (out or "").split() if rc == 0 else []
+
+
+def _find_tap(remote, tenant, node_id, ifid, lab_id, vpcs, node_name):
+    """到服务器上确认这次要抓的 tap 到底叫什么。
+
+    先按公式试（6.x / 7.x 各一个），都对不上就按「节点 id + 网卡编号」
+    在 vun* 里扫一遍 —— 万一哪天 EVE 又把命名改一遍（7.x 就是这么改的），
+    至少不会因为公式过期就抓不了包。
+    """
+    cands = tap_candidates(tenant, node_id, ifid, lab_id, vpcs)
+    for c in cands:
+        if remote.run("ip -o link show dev %s 2>&1" % c)[0] == 0:
+            return c
+
+    names = _link_names(remote)
+    tail = _hexw(node_id, 3) + _hexw(255 if (vpcs and int(ifid) == 0) else ifid, 2)
+    for nm in names:
+        if nm.startswith("vun") and len(nm) == 15 and nm.endswith(tail):
+            return nm
+
+    # 报错时把「看着像」的几个名字带上，省得用户再上服务器查
+    near = [n for n in names if n.startswith(("vun", "vunl"))][:6]
+    raise CapError(
+        "节点 %s 的这块网卡上找不到 tap（试过 %s）。先确认节点真的在跑；"
+        "如果确实在跑，多半是这台 EVE 的网卡命名又变了，把服务器上 "
+        "`ip -o link show` 里 vun 开头的几行发我%s"
+        % (node_name, "、".join(cands),
+           ("（这台机器上现有：" + "、".join(near) + "）") if near else
+           "（这台机器上现在一块 vun/vunl 网卡都没有）"))
 
 
 class Session:
@@ -247,16 +329,13 @@ class Manager:
         self._lock = threading.RLock()
 
     def start(self, remote, tenant, lab, node_id, node_name, ifid, iface,
-              snaplen=0, bpf="", local_dir=None):
+              snaplen=0, bpf="", local_dir=None, lab_id=1, vpcs=False):
         if not remote:
             raise CapError("抓包需要 SSH 连接（在连接设置里填 SSH 账号）")
         ifid = int(ifid)
-        tap = tap_name(tenant, node_id, ifid)
         bpf = _check_bpf(bpf)
-        rc, o, e = remote.run("ip -o link show %s 2>&1" % tap)
-        if rc != 0:
-            raise CapError("网卡 %s 不存在 —— 节点 %s 启动后才会建这块 tap"
-                           % (tap, node_name or node_id))
+        tap = _find_tap(remote, tenant, node_id, ifid, lab_id, vpcs,
+                        node_name or node_id)
 
         out_dir = local_dir or os.path.join(os.path.expanduser("~"), "Documents", LOCAL_SUBDIR)
         os.makedirs(out_dir, exist_ok=True)

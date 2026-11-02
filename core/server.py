@@ -487,7 +487,10 @@ class App:
         iid, nm = self._iface_of(path, nid, iface, ifid)
         tenant = (self.info.get("caps") or {}).get("tenant") or 0
         info = self.caps.start(self.remote, tenant, path, nid, name, iid, nm,
-                               snaplen=snaplen, bpf=bpf, local_dir=self.capture_dir())
+                               snaplen=snaplen, bpf=bpf, local_dir=self.capture_dir(),
+                               lab_id=node.get("lab_id") or 1,
+                               vpcs=(str(node.get("template") or node.get("type")
+                                         or "").strip() == "vpcs"))
         self.log("开始抓包 %s %s（%s）" % (name, nm, info["ifname"]))
         return info
 

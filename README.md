@@ -458,7 +458,13 @@ EVE 网页版那个抓包按钮用的是 `capture://<host>/vunl0_1_0` 自定义�
 「EVE Client」插件去开 Wireshark；**CE 的 REST API 里没有抓包接口**。所以这里直接走 SSH，
 但做成**点了就出窗口、包里实时滚**：
 
-1. 节点网卡在宿主机上是 tap `vunl{tenant}_{节点id}_{接口编号}`（`e0/0`=0、`e0/1`=16……）
+1. 节点网卡在宿主机上是一块 tap 网卡，**两代 EVE 的命名不一样**：
+   - CE 6.x：`vunl{tenant}_{节点id}_{接口编号}`
+   - Pro 7.x：`vun` + 四段十六进制 `{实验:3}{tenant:4}{节点id:3}{接口:2}`，
+     实验 1 / tenant 0 / 节点 1 的 `e0/0` 就是 `vun001000000100`
+   - 接口编号不是序号：`e0/0`=0、`e0/1`=16（每块网卡占 16 个槽）；
+     程序会把两套名字都算一遍、拿去服务器上确认哪个真的存在，都对不上时
+     再按「节点 id + 接口编号」扫一遍 `vun*`，所以 EVE 哪天又改名也不至于抓不了
 2. SSH 里 `tcpdump -i <tap> -s 0 -U -n -w -` 前台跑，stdout 就是裸 pcap 流
 3. 本机一个线程边读边做两件事：写 `我的文档\eve-captures\<实验>_<节点>_<网卡>_<时间>.pcap`，
    同时灌进 `wireshark -k -i -` 的 stdin —— 所以点「抓包」时 Wireshark 立刻弹出并开始滚包
@@ -583,7 +589,7 @@ web/                前端（xterm.js 已本地化到 vendor/，i18n.js 管语�
 | 删节点/网络报 `HTTP 500 Slim Application Error` | Pro 对「要删的东西已经不存在」回 500 HTML。已修：复核后当成功，重复删除不会假失败 |
 | 点了「＋ 节点」模板大片灰掉 | 那些模板宿主机上没装镜像（`/api/list/templates` 里带 `.missing`）。先到「镜像库」导入对应镜像 |
 | 新建的节点启动不起来 | 模板的默认参数（镜像/内存）被 EVE 记下了但镜像不存在：检查节点「镜像」字段，或先导入镜像 |
-| 抓包提示「节点还没运行」 | 只能在运行中的节点上抓；EVE 是节点启动后才建 `vunl*` tap |
+| 抓包提示「节点还没运行」 | 只能在运行中的节点上抓；EVE 是节点启动后才建那块 tap 网卡 |
 | 抓包保存下来 0 个包 | 那条链路上真没流量（IOL 不配地址时通常什么都不发）。先让设备 ping 一下再抓 |
 | 抓包提示没找到 Wireshark | 装 [Wireshark](https://www.wireshark.org/) 后重试；文件本身已经存好了，路径会提示出来 |
 | 抓包报 `tcpdump: command not found` | 服务器没装 tcpdump：`apt-get install -y tcpdump` |

@@ -493,7 +493,14 @@ The web UI's capture button uses the custom `capture://<host>/vunl0_1_0` protoco
 the locally installed “EVE Client” helper; **CE's REST API has no capture endpoint**. This
 client goes over SSH but still gives you “click and watch packets scroll”:
 
-1. A node NIC is the host tap `vunl{tenant}_{node id}_{port index}` (`e0/0`=0, `e0/1`=16, …)
+1. A node NIC is a host tap, and **the two EVE generations name them differently**:
+   - CE 6.x: `vunl{tenant}_{node id}_{port index}`
+   - Pro 7.x: `vun` + four hex fields `{lab:3}{tenant:4}{node id:3}{port:2}`,
+     so lab 1 / tenant 0 / node 1 `e0/0` is `vun001000000100`
+   - The port index is not a sequence number: `e0/0`=0, `e0/1`=16 (16 slots per NIC).
+     The client computes both names, asks the server which one actually exists, and if
+     neither matches it falls back to scanning `vun*` for “node id + port index”, so a
+     future rename in EVE will not break capture
 2. Over SSH it runs `tcpdump -i <tap> -s 0 -U -n -w -` in the foreground; stdout is a raw pcap stream
 3. A local thread does two things at once: writes
    `Documents\eve-captures\<lab>_<node>_<nic>_<time>.pcap` and feeds the same bytes into
@@ -632,7 +639,7 @@ web/                front end (xterm.js vendored locally, i18n.js for language/t
 | `HTTP 500 Slim Application Error` when deleting | Pro returns 500 HTML for already-deleted objects. Fixed with a re-check |
 | Most templates greyed out in “+ Node” | Those templates have no image on the host (`.missing` in `/api/list/templates`). Import the image first |
 | A new node will not start | Template defaults (image/RAM) point at a missing image; check the node's “image” field |
-| “Node is not running” when capturing | Only running nodes have a tap |
+| “Node is not running” when capturing | Only running nodes have a tap NIC |
 | A capture saved 0 packets | That link really was idle. Make a device ping first |
 | Wireshark not found | Install [Wireshark](https://www.wireshark.org/); the file is already saved and its path is shown |
 | `tcpdump: command not found` | `apt-get install -y tcpdump` on the server |
