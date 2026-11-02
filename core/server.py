@@ -871,6 +871,7 @@ class Handler(BaseHTTPRequestHandler):
                     start = a.cfg.ui().get("export_dir") or ""
                 except Exception:
                     start = ""
+            a.log("选目录：起始目录 %s" % (start or "（系统默认）"))
             return self._json({"ok": True, "dir": fspick.pick_folder(start)})
         if path == "/api/reveal":
             return self._json({"ok": True, **fspick.reveal(body.get("path"))})

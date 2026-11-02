@@ -42,7 +42,12 @@ def pick_folder(start=""):
     if not wins:
         raise ValueError("当前没有图形窗口（--no-gui 模式），只能导出到默认目录")
 
-    start = (start or "").strip()
+    start = (start or "").strip().strip('"')
+    if start:
+        # 一定要 normpath：Windows 的对话框（.NET InitialDirectory）**不认正斜杠**，
+        # 传 C:/Users/a/Desktop 进去会被静默忽略，弹出来就停在系统记忆的上次位置。
+        # 配置里、前端存的值都可能是正斜杠，这里统一成 C:\Users\a\Desktop。
+        start = os.path.normpath(os.path.abspath(start))
     if not start or not os.path.isdir(start):
         start = _default_start()
     try:
