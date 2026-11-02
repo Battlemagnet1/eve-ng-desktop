@@ -16,11 +16,15 @@
 #define MyAppVersion "0.3.1"
 #define MyAppExeName "EVE-Desktop.exe"
 
-; 离线 Wireshark：放进来就随包（体积 +~90MB），不放就没有这个选项
+; 离线 Wireshark：放进来就随包（体积 +~90MB），不放就没有这个选项。
+; 两种包输出到不同文件名（带 -full），免得同版本号互相覆盖、事后分不清哪个能离线装。
 #define WiresharkBundle "vendor\Wireshark-x64.exe"
 #define WiresharkName "Wireshark-x64.exe"
 #if FileExists(SourcePath + WiresharkBundle)
   #define HAVE_WS
+  #define SetupFileName "EVE-Desktop-Setup-" + MyAppVersion + "-full"
+#else
+  #define SetupFileName "EVE-Desktop-Setup-" + MyAppVersion
 #endif
 
 [Setup]
@@ -32,7 +36,7 @@ DefaultDirName={autopf}\EVE-Desktop
 DefaultGroupName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 OutputDir=Output
-OutputBaseFilename=EVE-Desktop-Setup-{#MyAppVersion}
+OutputBaseFilename={#SetupFileName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
