@@ -272,8 +272,17 @@ def export_lab(app, path, out_dir=None, progress=None):
         "networks": networks,
     }
 
-    out_dir = out_dir or _default_export_dir(app)
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir = os.path.abspath((out_dir or "").strip().strip('"')
+                              or _default_export_dir(app))
+    # 用户自己选的目录可能不存在（手输）或没权限（C:\ 根、别人的目录），
+    # 这两种都要说人话，不能让异常冒到前端变成一串英文堆栈
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as e:
+        raise PackError("导出目录建不出来：%s（%s）" % (out_dir, e))
+    if not os.path.isdir(out_dir):
+        raise PackError("导出目录不是一个文件夹：%s" % out_dir)
+
     base = _safe_name(manifest["lab"]["name"] or os.path.basename(path)[:-4])
     out = os.path.join(out_dir, "%s-%s.zip" % (base, _stamp()))
     n = 1
@@ -281,16 +290,30 @@ def export_lab(app, path, out_dir=None, progress=None):
         out = os.path.join(out_dir, "%s-%s-%d.zip" % (base, _stamp(), n))
         n += 1
 
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-        z.writestr("lab.unl", text)
-        z.writestr("textboxes.json", json.dumps(notes, ensure_ascii=False, indent=1))
-        for nid, cfg in extra.items():
-            nm = _safe_name((node_map.get(nid) or {}).get("name") or nid, "node")
-            z.writestr("configs/%s-%s.cfg" % (nid, nm), cfg)
+    try:
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            z.writestr("lab.unl", text)
+            z.writestr("textboxes.json", json.dumps(notes, ensure_ascii=False, indent=1))
+            for nid, cfg in extra.items():
+                nm = _safe_name((node_map.get(nid) or {}).get("name") or nid, "node")
+                z.writestr("configs/%s-%s.cfg" % (nid, nm), cfg)
+    except OSError as e:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        raise PackError("写不进这个目录：%s（换一个位置，或换个有写权限的文件夹）" % out_dir)
+    except Exception as e:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        raise PackError("打包失败：%s" % e)
 
     return {
         "file": out,
+        "dir": out_dir,
         "size": os.path.getsize(out),
         "path": "/" + path,
         "name": manifest["lab"]["name"],

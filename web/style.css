@@ -383,6 +383,25 @@ body.dock-resizing .term iframe{pointer-events:none}
 .toast.err{border-color:var(--toast-err-bd);background:var(--toast-err-bg)}
 .toast.ok{border-color:var(--toast-ok-bd);background:var(--toast-ok-bg)}
 
+/* ---------- 导出结果浮层 ----------
+   任务列表长在「镜像库」页里，用户在拓扑页点完导出根本看不到它。
+   导出结果单独浮一张卡，带完整路径 + 打开文件夹，任何页面都看得见。 */
+.fcard{
+  position:fixed;right:18px;bottom:46px;z-index:78;
+  width:min(520px,calc(100vw - 36px));
+  background:var(--float);border:1px solid var(--line2);border-radius:10px;
+  padding:11px 13px;box-shadow:0 12px 32px rgba(0,0,0,.38);
+  transform:translateY(14px);opacity:0;pointer-events:none;transition:all .22s;
+}
+.fcard.on{transform:none;opacity:1;pointer-events:auto}
+.fcard .h{display:flex;justify-content:space-between;align-items:center;gap:10px;
+  font-size:12.5px;color:var(--txt-strong)}
+.fcard .h .x{cursor:pointer;color:var(--txt3);font-size:12px;padding:0 2px;line-height:1}
+.fcard .h .x:hover{color:var(--txt)}
+.fcard .p{margin-top:6px;font-size:11.5px;line-height:1.55;color:var(--txt2);
+  word-break:break-all;font-family:Consolas,"Courier New",monospace}
+.fcard .acts{display:flex;gap:6px;justify-content:flex-end;margin-top:9px}
+
 /* ---------- 补充 ---------- */
 .muted{color:var(--txt3);font-size:11.5px;margin-left:8px}
 .sub-title{font-size:11.5px;color:var(--txt3);letter-spacing:.06em;text-transform:uppercase;

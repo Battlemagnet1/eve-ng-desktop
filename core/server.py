@@ -15,7 +15,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import capture, clip, images, labpack, netcfg
+from . import capture, clip, fspick, images, labpack, netcfg
 from .config import Config
 from .notes import Notes
 from .eve import EveError, EveSession
@@ -862,6 +862,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/lab/export":
             a.require(ssh=True)
             return self._lab_export(body)
+        if path == "/api/dialog/dir":
+            # 原生目录选择框。取消时 dir=None，前端据此中止导出。
+            # 没传起始目录就用上次导出用过的（进程刚起、前端还没记住时也能停对地方）
+            start = (body.get("start") or "").strip()
+            if not start:
+                try:
+                    start = a.cfg.ui().get("export_dir") or ""
+                except Exception:
+                    start = ""
+            return self._json({"ok": True, "dir": fspick.pick_folder(start)})
+        if path == "/api/reveal":
+            return self._json({"ok": True, **fspick.reveal(body.get("path"))})
         if path == "/api/iol/fix":
             a.require(ssh=True)
             return self._json({"ok": True, **images.iol_fix(a.remote)})
@@ -1020,18 +1032,27 @@ class Handler(BaseHTTPRequestHandler):
         """
         a = self.app
         path = _req(body, "path", "实验路径")
+        out_dir = (body.get("out_dir") or "").strip().strip('"')
+        if out_dir:
+            # 统一成本机绝对路径（斜杠方向、`.`/`..` 都归一），再记下来给下次选目录用
+            out_dir = os.path.abspath(out_dir)
+            try:
+                a.cfg.set_ui("export_dir", out_dir)
+            except Exception:
+                pass
         box = {}
 
         def worker(t):
-            res = labpack.export_lab(a, path, progress=lambda m: t.update(stage=m))
+            res = labpack.export_lab(a, path, out_dir=out_dir or None,
+                                     progress=lambda m: t.update(stage=m))
             box.update(res)
             t.update(file=res["file"],
-                     message="%d 节点 / %d 网络 / %d 个配置 / %d 个文本框"
+                     message="%d 节点 · %d 网络 · %d 个配置 · %d 个文本框 → %s"
                              % (res["nodes"], res["networks"], res["configs"],
-                                res["textboxes"]))
+                                res["textboxes"], res["dir"]))
 
         t = a.tasks.create("lab-export", "导出拓扑 %s" % os.path.basename(path), worker)
-        a.log("导出拓扑 %s → 任务 %s" % (path, t.id))
+        a.log("导出拓扑 %s → %s（任务 %s）" % (path, out_dir or "默认目录", t.id))
         return self._json({"ok": True, "tid": t.id})
 
     def _lab_import(self, q):

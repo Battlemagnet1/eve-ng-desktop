@@ -45,12 +45,12 @@ async function api(path, opts = {}) {
 }
 
 let toastTimer = null;
-function toast(msg, kind = '') {
+function toast(msg, kind = '', ms = 2600) {
   const el = $('#toast');
   el.textContent = msg;
   el.className = 'toast on ' + kind;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.className = 'toast ' + kind; }, 2600);
+  toastTimer = setTimeout(() => { el.className = 'toast ' + kind; }, ms);
 }
 function fail(e) { toast(e.message || String(e), 'err'); console.error(e); }
 
@@ -1872,18 +1872,69 @@ function startImport(file) {
 }
 
 let taskTimer = null;
+const exportNotified = new Set();   // 已经弹过「已导出到 …」的任务 id，别重复弹
 
 /* ---------------------------------------------------------------- 实验导出 / 导入
-   导出：.unl 原样打包（拓扑 + 内嵌在 <objects><configs> 里的节点配置都在里面），
+   导出：先弹原生目录选择框（默认停在上次选的目录），选完再打包。
+        .unl 原样打包（拓扑 + 内嵌在 <objects><configs> 里的节点配置都在里面），
         外加本机的文本框侧车。后端生成 zip 后走现成的任务 + 下载通道。
    导入：把 zip 传上去，后端建实验 → 写 .unl → 恢复文本框，回来直接打开。   */
+let exportLastDir = '';
+
+async function pickExportDir() {
+  try {
+    const d = await api('/api/dialog/dir', { method: 'POST', body: { start: exportLastDir } });
+    return { ok: true, dir: d.dir || '' };
+  } catch (e) {
+    // 没图形窗口（--no-gui / 直接用浏览器打开）时弹不出选择框，
+    // 不能因此不让导出 —— 退回默认目录，并把原因说清楚
+    console.warn('[选目录]', e);
+    return { ok: false, dir: '' };
+  }
+}
+
 async function exportLab() {
   if (!S.labPath) return toast('先打开一个实验', 'warn');
+  const pick = await pickExportDir();
+  if (pick.ok && !pick.dir) return toast('已取消导出', 'warn');   // 用户点了取消
+  if (!pick.ok) toast('弹不出目录选择框，先导出到默认目录', 'warn');
+
   try {
-    await api('/api/lab/export', { method: 'POST', body: { path: S.labPath } });
+    const d = await api('/api/lab/export', {
+      method: 'POST', body: { path: S.labPath, out_dir: pick.dir },
+    });
+    if (pick.dir) exportLastDir = pick.dir;
     toast('正在打包实验…');
     pollTasks();
+    return d;
   } catch (e) { fail(e); }
+}
+
+async function revealPath(p) {
+  try {
+    await api('/api/reveal', { method: 'POST', body: { path: p } });
+  } catch (e) { fail(e); }
+}
+
+/* 导出完成后浮一张卡：完整路径 + 打开文件夹。
+   任务列表在「镜像库」页里，拓扑页上看不到，光靠 toast（2.6s）也不够。 */
+let fcardTimer = null;
+function exportCard(file) {
+  let el = $('#exportCard');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'exportCard';
+    el.className = 'fcard';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `<div class="h"><span>已导出到</span><span class="x" title="关闭">✕</span></div>
+    <div class="p">${esc(file)}</div>
+    <div class="acts"><button class="btn sm ghost" id="ecOpen">打开文件夹</button></div>`;
+  el.querySelector('.x').onclick = () => el.classList.remove('on');
+  el.querySelector('#ecOpen').onclick = () => revealPath(file);
+  requestAnimationFrame(() => el.classList.add('on'));
+  clearTimeout(fcardTimer);
+  fcardTimer = setTimeout(() => el.classList.remove('on'), 25000);
 }
 
 function importLab(file) {
@@ -1921,7 +1972,8 @@ async function pollTasks() {
         const stName = { queued: '排队中', running: '进行中', done: '完成',
                          failed: '失败', cancelled: '已取消' }[t.status] || t.status;
         const right = t.status === 'done' && t.file
-          ? `<a class="btn sm ghost" href="/api/download?tid=${t.id}">下载</a>` : '';
+          ? `<button class="btn sm ghost" data-reveal="${esc(t.file)}">打开文件夹</button>
+             <a class="btn sm ghost" href="/api/download?tid=${t.id}">下载</a>` : '';
         return `<div class="task">
           <div class="t1"><span>${esc(t.title)}</span><span class="badge">${esc(stName)}</span></div>
           <div class="t2">${esc(t.stage)} ${t.total ? '· ' + t.sent_h + ' / ' + t.total_h : ''} ${t.speed_h}</div>
@@ -1930,6 +1982,22 @@ async function pollTasks() {
           <div style="text-align:right">${right}</div>
         </div>`;
       }).join('');
+      // 「打开文件夹」：导出完直接把资源管理器定位到那个文件
+      el.querySelectorAll('[data-reveal]').forEach(b => {
+        b.onclick = () => revealPath(b.getAttribute('data-reveal'));
+      });
+      // 导出完成：浮一张卡说明存哪了（列表在镜像库页，这里看不到），
+      // 失败则直接报错，别让人以为成功了
+      d.items.forEach(t => {
+        if (t.status === 'done' && t.file && !exportNotified.has(t.id)) {
+          exportNotified.add(t.id);
+          if (t.kind === 'lab-export') exportCard(t.file);
+        }
+        if (t.status === 'failed' && t.kind === 'lab-export' && !exportNotified.has('f' + t.id)) {
+          exportNotified.add('f' + t.id);
+          toast(t.message || '导出失败', 'err', 5000);
+        }
+      });
     }
     const busy = d.items.some(t => t.status === 'running' || t.status === 'queued');
     if (busy) taskTimer = setTimeout(pollTasks, 1200);

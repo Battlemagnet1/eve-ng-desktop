@@ -38,8 +38,14 @@
     '实验': 'Lab',
     '导出': 'Export',
     '导入': 'Import',
-    '把当前实验导出成 zip：拓扑结构 + 节点配置 + 文本框':
-      'Export this lab as a zip: topology + node configs + text boxes',
+    '把当前实验导出成 zip（可先选保存位置）：拓扑结构 + 节点配置 + 文本框':
+      'Export this lab as a zip (you can choose where to save it): topology + node configs + text boxes',
+    '已取消导出': 'Export cancelled',
+    '弹不出目录选择框，先导出到默认目录':
+      'Could not open the folder picker; exporting to the default folder',
+    '打开文件夹': 'Show in folder',
+    '已导出到 {}': 'Exported to {}',
+    '已导出到': 'Exported to',
     '从 zip 导入实验：拓扑结构 + 节点配置 + 文本框，会新建一个实验':
       'Import a lab from a zip: topology + node configs + text boxes, creates a new lab',
     '先打开一个实验': 'Open a lab first',
@@ -83,6 +89,8 @@
     '导出拓扑 {}': 'Export topology {}',
     '{} 节点 / {} 网络 / {} 个配置 / {} 个文本框':
       '{} nodes / {} networks / {} configs / {} text boxes',
+    '{} 节点 · {} 网络 · {} 个配置 · {} 个文本框 → {}':
+      '{} nodes · {} networks · {} configs · {} text boxes → {}',
     '设置': 'Settings',
     '说明': 'Description',
     '适应': 'Fit',

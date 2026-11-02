@@ -317,8 +317,12 @@ after “Reload”.
 
 | Action | Result |
 |---|---|
-| **Export** | Packs the current lab into a zip in the export directory (Desktop by default), named `<lab>-<timestamp>.zip`; the task bar shows progress and its “Download” link gives you the file again |
+| **Export** | Opens the native “select folder” dialog first (starting where you exported last time; cancelling does nothing), then packs the lab into `<lab>-<timestamp>.zip`. When it finishes, a card in the bottom-right shows the **full path** with a “Show in folder” button (locates the zip in Explorer) and folds away after 25 seconds |
 | **Import** | Pick a zip; a **new lab** is created on the currently connected server and opened automatically — topology, links, node properties, **node configs** and text boxes all come back |
+
+> The task list lives on the Images page, so while you are on the topology page you would never
+> see it — hence the separate result card. No page switching, no log digging: the path is right
+> there. The folder picker remembers the last directory you chose.
 
 Verified path: **CE 6.2 → Pro 7.2** (172.30.50.123 → 172.30.56.229). 10 nodes / 8 networks /
 8 links all survived, and `name / template / image / ram / left / top` matched node by node;
@@ -382,6 +386,9 @@ the `.unl`, so they are complete on arrival. **On start EVE dumps the embedded c
 - **SSH is required**: reading and writing `.unl` files goes over SSH (the REST API does not
   expose the raw lab file). Without SSH configured you get a prompt to fill in the credentials
   and **nothing on the server is touched**.
+- **The folder picker is the native Windows one.** Under `--no-gui`, or when you open the app in
+  a plain browser, there is no window to attach a dialog to: the app says so and falls back to
+  the default folder (the one used last time), so exporting still works.
 - **64 MB pack limit** (enforced from `Content-Length`); real labs are tens of KB to a few MB.
 - **Images do not travel with the pack**: no qemu / iol image binaries inside. If the target
   lacks an image the topology still imports completely, but those nodes cannot start — import
@@ -523,6 +530,7 @@ core/
   clip.py           Windows clipboard access (ctypes, for the terminal)
   notes.py          topology text boxes (local sidecar file, never inside .unl)
   labpack.py        topology export / import (.unl moved as-is, embedded node configs included)
+  fspick.py         native folder picker / reveal a file in the file manager
   server.py         local HTTP routes (binds 127.0.0.1 only)
   tasks.py          background tasks and progress
 web/                front end (xterm.js vendored locally, i18n.js for language/theme)
@@ -565,6 +573,7 @@ web/                front end (xterm.js vendored locally, i18n.js for language/t
 | `tcpdump: command not found` | `apt-get install -y tcpdump` on the server |
 | Dragging pans the canvas instead of moving a node | Left-drag on empty space is box-select (EVE habit); pan with **right-drag**, **hold Space and drag**, middle-drag or `Alt`+left-drag |
 | “This feature needs SSH” on export/import | Packs read and write the `.unl` on the server, and the REST API does not expose the raw file. Fill in the SSH credentials under Settings (EVE default `root/eve`) |
+| Clicking Export starts packing without a folder dialog | There is no GUI window (`--no-gui`, or the page is open in a plain browser). It falls back to the last used folder; the path on the result card is where the file went |
 | Import fails with “EVE could not parse the topology, rolled back: invalid node template …” | The pack uses a template that EVE on the target does not know (possible across major versions). The file just created was deleted, so no broken lab is left; switch those nodes to a template the target has |
 | Import succeeded but warns “Images are missing on this server, these nodes cannot start” | The topology is complete; the images just are not installed. Import them from the image library, then start the nodes |
 | Nodes start after import but their config is empty | Those nodes had no saved config to begin with (`config` is not `1` on the source node). Configs travel inside the `.unl`, so nothing on the source means nothing on the target |
