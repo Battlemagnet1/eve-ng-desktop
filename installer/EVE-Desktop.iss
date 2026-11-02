@@ -5,7 +5,7 @@
 ;   ISCC.exe EVE-Desktop.iss
 
 #define MyAppName "EVE Desktop"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.3.0"
 #define MyAppExeName "EVE-Desktop.exe"
 
 ; Wireshark 官方「latest」直链（三个镜像轮换，Wireshark-latest-x64.exe 永远指向当前稳定版）
