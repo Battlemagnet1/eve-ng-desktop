@@ -1669,7 +1669,12 @@ async function openHtml5(url, name) {
       return;
     }
     if (r.why) toast(r.why, 'warn');
-  } catch (e) { /* 落到内嵌面板 */ }
+  } catch (e) {
+    // 独立窗口没开成（仅服务模式、pywebview 缺失…）：退到 dock 里的 iframe。
+    // 要说出来 —— 那个 iframe 里没有「粘贴 / 键入」按钮，静默退化会被当成功能没了。
+    toast('独立窗口没开成（' + (e.message || e) + '），已放进底部面板；'
+        + '面板里没有「粘贴 / 键入」按钮', 'warn', 7000);
+  }
   addIframe('html5-' + name, name + '（图形）', url);
 }
 

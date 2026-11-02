@@ -145,6 +145,9 @@
       '{} of its nodes are running; they will be stopped first.',
     '删除后无法恢复。': 'This cannot be undone.',
     '正在删除 {}…': 'Deleting {}…',
+    '独立窗口没开成（{}），已放进底部面板；面板里没有「粘贴 / 键入」按钮':
+      'Could not open the separate window ({}); showing it in the bottom dock instead —'
+      + ' that panel has no Paste / Type buttons',
     '读取实验信息…': 'Reading lab details…',
     '已删除 {}（{} 个节点）': 'Deleted {} ({} nodes)',
     '取消选择': 'Clear selection',

@@ -74,23 +74,26 @@ _JS = r"""
     if (b) { return b; }
     b = document.createElement('div');
     b.id = '__eve_h5_bar';
+    /* 常驻可见：以前默认 0.35 透明度、移开鼠标就淡回去，浅色画面上基本看不见，
+       用户以为「工具条没了」。现在常态 0.95，鼠标移开也只降到 0.75。 */
     b.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:2147483646;display:flex;'
-      + 'gap:6px;align-items:center;background:rgba(22,24,30,.72);padding:5px 6px;'
-      + 'border-radius:9px;border:1px solid rgba(255,255,255,.14);opacity:.35;'
+      + 'gap:6px;align-items:center;background:rgba(18,20,26,.95);padding:5px 6px;'
+      + 'border-radius:9px;border:1px solid rgba(255,255,255,.28);opacity:.95;'
+      + 'box-shadow:0 6px 20px rgba(0,0,0,.55);'
       + 'transition:opacity .15s;backdrop-filter:blur(3px);'
       + 'font:12px/1 "Segoe UI",system-ui,sans-serif;user-select:none';
     b.onmouseenter = function () { b.style.opacity = '1'; };
-    b.onmouseleave = function () { b.style.opacity = '.35'; };
+    b.onmouseleave = function () { b.style.opacity = '.75'; };
 
     function btn(text, tip, fn) {
       var x = document.createElement('button');
       x.textContent = text;
       x.title = tip;
-      x.style.cssText = 'background:rgba(255,255,255,.1);color:#e8eaee;border:0;'
+      x.style.cssText = 'background:rgba(255,255,255,.14);color:#f2f4f8;border:0;'
         + 'border-radius:6px;padding:6px 10px;font:12px/1 "Segoe UI",system-ui,sans-serif;'
         + 'cursor:pointer';
-      x.onmouseenter = function () { x.style.background = 'rgba(255,255,255,.22)'; };
-      x.onmouseleave = function () { x.style.background = 'rgba(255,255,255,.1)'; };
+      x.onmouseenter = function () { x.style.background = 'rgba(255,255,255,.28)'; };
+      x.onmouseleave = function () { x.style.background = 'rgba(255,255,255,.14)'; };
       x.onclick = function (e) { e.preventDefault(); fn(); };
       b.appendChild(x);
       return x;
@@ -555,15 +558,20 @@ class ConsoleWindows:
             return False
 
     def _inject_later(self, win):
-        """在后台线程里注入。
+        """在后台线程里注入，并且**一直看着**这个窗口。
 
         **不能**在 pywebview 的事件回调（loaded 等）里调 evaluate_js：
         那些回调跑在 WinForms 的 UI 线程上，而 evaluate_js 会 Invoke 回 UI
         线程再等一个信号量 —— 直接死锁，现象就是窗口一片黑、整个窗口点不动。
         所以这里用独立线程轮询着注入，脚本自身幂等（重复执行不会叠工具条）。
+
+        以前注入成功一次就收工，结果是：控制台页面在注入之后又整页导航
+        （登录跳转、换 token、EVE 前端换路由）时，注入的脚本跟着旧文档一起
+        没了，工具条再也不会出现 —— 用户看到「窗口好好的，但粘贴 / 键入没了」。
+        现在成功后每 6 秒复查一次，发现 `__eveH5` 不在就补注入。
         """
         ok = False
-        for delay in (1.2, 2.5, 4.0, 7.0, 10.0):
+        for delay in (1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0):
             time.sleep(delay)
             try:
                 if win.evaluate_js("!!window.__eveH5"):
@@ -574,14 +582,28 @@ class ConsoleWindows:
                     break
             except Exception:
                 continue          # 还在导航 / 窗口已关，下一轮再说
-        self.log("控制台窗口脚本注入%s" % ("成功（粘贴按钮可用）" if ok
-                                          else "失败：用 Ctrl+Alt+Shift 打开 Guacamole 剪贴板面板"),
+        self.log("控制台窗口脚本注入%s" % ("成功（粘贴 / 键入可用）" if ok
+                                          else "失败：可先用 Ctrl+Alt+Shift 打开 Guacamole 自带的剪贴板面板"),
                  "info" if ok else "warn")
         try:
             self._remember(win)
             win.events.closed += lambda *a: self._forget(win)
         except Exception:
             pass
+
+        # 看门狗：页面再导航一次就得补注入，否则工具条凭空消失
+        deadline = time.time() + 3600
+        while time.time() < deadline:
+            time.sleep(6)
+            try:
+                if win not in self._wins.values():
+                    return                       # 窗口关了
+                if win.evaluate_js("!!window.__eveH5"):
+                    continue
+            except Exception:
+                return                           # 窗口已销毁
+            if self._inject(win):
+                self.log("控制台页面重新导航过，已补注入工具条")
 
     def _forget(self, win):
         with self._lock:
