@@ -389,15 +389,49 @@ def install_webview_hooks():
     return True
 
 
+def dpi_scale():
+    """主屏缩放倍数（96 DPI = 1.0）。取不到就当 1.0。
+
+    `SystemParametersInfoW(SPI_GETWORKAREA)` 在 **DPI 感知进程**里返回物理像素，
+    而 pywebview 的 `create_window(width=…)` 用的是**逻辑像素（DIP）**。两者在
+    150% 的笔记本上差 1.5 倍 —— 照物理像素算出来的窗口比屏幕还大，
+    右下角（「粘贴 / 键入」工具条）就被推到屏幕外面，用户只会说“工具条没了”。
+    实测（2560x1440 @150%）：请求 1725x947 DIP 的窗口落在 (418,188)-(2143,1135)，
+    右边缘超出屏幕 435、下边缘超出 205。
+    """
+    try:
+        import ctypes
+
+        u = ctypes.windll.user32
+        d = 0
+        try:
+            d = int(u.GetDpiForSystem())        # Win10 1607+
+        except Exception:
+            d = 0
+        if not d:
+            dc = u.GetDC(0)
+            try:
+                d = int(ctypes.windll.gdi32.GetDeviceCaps(dc, 88))   # LOGPIXELSX
+            finally:
+                u.ReleaseDC(0, dc)
+        return (d / 96.0) if d and d > 0 else 1.0
+    except Exception:
+        return 1.0
+
+
 def workarea():
-    """屏幕工作区（去掉任务栏）的宽高；取不到就给个保守值。"""
+    """主屏工作区（去掉任务栏）的宽高，**逻辑像素（DIP）** —— 给 pywebview 用。
+
+    见 `dpi_scale()` 的注释：不折算 DPI，窗口就会比屏幕大。
+    """
     try:
         import ctypes
         from ctypes import wintypes
 
         r = wintypes.RECT()
         if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):
-            w, h = r.right - r.left, r.bottom - r.top
+            s = dpi_scale()
+            w, h = int((r.right - r.left) / s), int((r.bottom - r.top) / s)
             if w > 640 and h > 480:
                 return w, h
     except Exception:
@@ -426,7 +460,9 @@ class ConsoleWindows:
 
     # ---------- 尺寸 ----------
     def _size(self):
-        aw, ah = workarea()
+        aw, ah = workarea()                       # 逻辑像素，见 workarea() 注释
+        # 上限按 96% 工作区算：贴满屏幕时窗口边框会压到边缘，右下角就悬了
+        lim_w, lim_h = max(760, int(aw * 0.96)), max(480, int(ah * 0.96))
         w, h = int(aw * 0.92), int(ah * 0.92)
         saved = {}
         try:
@@ -438,9 +474,9 @@ class ConsoleWindows:
         except Exception:
             sw = sh = 0
         if sw > 640 and sh > 400:
-            w, h = min(sw, aw), min(sh, ah)
-        w = max(760, min(w, aw))
-        h = max(480, min(h, ah))
+            w, h = min(sw, lim_w), min(sh, lim_h)
+        w = max(760, min(w, lim_w))
+        h = max(480, min(h, lim_h))
         x = max(0, (aw - w) // 2)
         y = max(0, (ah - h) // 2)
         return w, h, x, y
@@ -504,7 +540,9 @@ class ConsoleWindows:
             bridge._win = win
             self._wins[url] = win
             threading.Thread(target=self._inject_later, args=(win,), daemon=True).start()
-            self.log("已在新窗口打开图形控制台：%s" % title)
+            aw, ah = workarea()
+            self.log("已在新窗口打开图形控制台：%s（%dx%d @ %d,%d，工作区 %dx%d，缩放 %.0f%%）"
+                     % (title, w, h, x, y, aw, ah, dpi_scale() * 100))
 
         return {"mode": "window", "size": [w, h]}
 
