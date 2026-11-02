@@ -37,6 +37,26 @@
     '字符': 'chars',
     '实验': 'Lab',
     '导出': 'Export',
+    '导入': 'Import',
+    '把当前实验导出成 zip：拓扑结构 + 节点配置 + 文本框':
+      'Export this lab as a zip: topology + node configs + text boxes',
+    '从 zip 导入实验：拓扑结构 + 节点配置 + 文本框，会新建一个实验':
+      'Import a lab from a zip: topology + node configs + text boxes, creates a new lab',
+    '先打开一个实验': 'Open a lab first',
+    '正在打包实验…': 'Packing the lab…',
+    '先连接一台 EVE 服务器': 'Connect to an EVE server first',
+    '正在导入 {}…': 'Importing {}…',
+    '已导入 {}：{} 节点 · {} 个配置 · {} 个文本框':
+      'Imported {}: {} nodes · {} configs · {} text boxes',
+    '节点配置已随拓扑写入，启动节点即生效':
+      'Node configs were written into the topology and take effect when the node starts',
+    '目标已有同名实验，已改名为 {}': 'A lab with that name already exists; renamed to {}',
+    '节点数对不上：包里 {} 个，服务器解析出 {} 个':
+      'Node count mismatch: {} in the pack, {} parsed by the server',
+    '文本框没恢复上：{}': 'Text boxes were not restored: {}',
+    '目标机缺镜像，这些节点起不来：{}（先用「镜像 → 导入」补上）':
+      'Images are missing on this server, these nodes cannot start: {} (import the images first)',
+    '节点 {} 的运行配置读不到：{}': 'Cannot read the running config of node {}: {}',
     '抓包': 'Capture',
     '拓扑': 'Topology',
     '接口': 'Interface',
@@ -55,6 +75,14 @@
     '网卡': 'NICs',
     '网络': 'Network',
     '节点': 'Node',
+    '完成': 'Done',
+    '排队中': 'Queued',
+    '进行中': 'Running',
+    '失败': 'Failed',
+    '已取消': 'Cancelled',
+    '导出拓扑 {}': 'Export topology {}',
+    '{} 节点 / {} 网络 / {} 个配置 / {} 个文本框':
+      '{} nodes / {} networks / {} configs / {} text boxes',
     '设置': 'Settings',
     '说明': 'Description',
     '适应': 'Fit',

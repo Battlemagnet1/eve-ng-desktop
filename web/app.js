@@ -1872,6 +1872,42 @@ function startImport(file) {
 }
 
 let taskTimer = null;
+
+/* ---------------------------------------------------------------- 实验导出 / 导入
+   导出：.unl 原样打包（拓扑 + 内嵌在 <objects><configs> 里的节点配置都在里面），
+        外加本机的文本框侧车。后端生成 zip 后走现成的任务 + 下载通道。
+   导入：把 zip 传上去，后端建实验 → 写 .unl → 恢复文本框，回来直接打开。   */
+async function exportLab() {
+  if (!S.labPath) return toast('先打开一个实验', 'warn');
+  try {
+    await api('/api/lab/export', { method: 'POST', body: { path: S.labPath } });
+    toast('正在打包实验…');
+    pollTasks();
+  } catch (e) { fail(e); }
+}
+
+function importLab(file) {
+  if (!file) return;
+  const name = String(file.name || '').replace(/\.zip$/i, '') || 'imported';
+  toast('正在导入 ' + file.name + '…');
+  fetch('/api/lab/import?name=' + encodeURIComponent(name), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: file,
+  }).then(async r => {
+    let d;
+    try { d = await r.json(); } catch (e) { throw new Error('HTTP ' + r.status); }
+    if (!d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    await loadLabs('');
+    toast(`已导入 ${d.name}：${d.nodes} 节点 · ${d.configs} 个配置 · ${d.textboxes} 个文本框`, 'ok');
+    if ((d.warnings || []).length) {
+      console.warn('[导入警告]', d.warnings);
+      setTimeout(() => toast(d.warnings[0], 'warn'), 1400);
+    }
+    return openLab(d.path);
+  }).catch(fail);
+}
+
 async function pollTasks() {
   clearTimeout(taskTimer);
   try {
@@ -1881,10 +1917,13 @@ async function pollTasks() {
     else {
       el.innerHTML = d.items.map(t => {
         const cls = t.status === 'done' ? 'done' : t.status === 'failed' ? 'fail' : '';
+        // 状态是后端给的英文枚举，先映射成中文再交给 i18n 翻（否则中文界面里全是 done/failed）
+        const stName = { queued: '排队中', running: '进行中', done: '完成',
+                         failed: '失败', cancelled: '已取消' }[t.status] || t.status;
         const right = t.status === 'done' && t.file
           ? `<a class="btn sm ghost" href="/api/download?tid=${t.id}">下载</a>` : '';
         return `<div class="task">
-          <div class="t1"><span>${esc(t.title)}</span><span class="badge">${esc(t.status)}</span></div>
+          <div class="t1"><span>${esc(t.title)}</span><span class="badge">${esc(stName)}</span></div>
           <div class="t2">${esc(t.stage)} ${t.total ? '· ' + t.sent_h + ' / ' + t.total_h : ''} ${t.speed_h}</div>
           <div class="bar ${cls}"><i style="width:${t.percent}%"></i></div>
           ${t.message ? `<div class="t2">${esc(t.message)}</div>` : ''}
@@ -1992,6 +2031,16 @@ function bind() {
     toast(S.showP2P ? '已显示直连桥（可右键改名/删除）' : '直连桥已隐藏，线直接连两个节点', 'ok');
   };
   $('#btnReload').onclick = () => S.labPath && openLab(S.labPath).catch(fail);
+  $('#btnLabExport').onclick = exportLab;
+  $('#btnLabImport').onclick = () => {
+    if (!(S.info || {}).host) return toast('先连接一台 EVE 服务器', 'warn');
+    $('#labImportFile').click();
+  };
+  $('#labImportFile').onchange = e => {
+    const f = (e.target.files || [])[0];
+    e.target.value = '';          // 允许连续导入同一个文件
+    importLab(f);
+  };
   $('#btnAddNode').onclick = () => togglePalette();
   $('#btnAddText').onclick = () => {
     if (!S.labPath) return toast('先打开一个实验', 'warn');

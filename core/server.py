@@ -15,7 +15,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import capture, clip, images, netcfg
+from . import capture, clip, images, labpack, netcfg
 from .config import Config
 from .notes import Notes
 from .eve import EveError, EveSession
@@ -631,6 +631,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/upload":
                 return self._upload(q)
+            if path == "/api/lab/import":
+                return self._lab_import(q)      # 请求体是 zip，不能当 JSON 解析
             body = self._body()
             return self._api_post(path, body)
         except (EveError, RemoteError, ValueError) as e:
@@ -857,6 +859,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/images/export":
             a.require(ssh=True)
             return self._export(body)
+        if path == "/api/lab/export":
+            a.require(ssh=True)
+            return self._lab_export(body)
         if path == "/api/iol/fix":
             a.require(ssh=True)
             return self._json({"ok": True, **images.iol_fix(a.remote)})
@@ -1005,6 +1010,61 @@ class Handler(BaseHTTPRequestHandler):
                 if not buf:
                     break
                 self.wfile.write(buf)
+
+    # ---------- 拓扑导出 / 导入（core/labpack.py） ----------
+    def _lab_export(self, body):
+        """导出实验：.unl（拓扑 + 内嵌的节点配置）+ 文本框 → 一个 zip。
+
+        配置本来就存在 .unl 的 <objects><configs> 里（base64），所以原样搬文件
+        就等于连配置一起搬了；运行目录里没存进 .unl 的残留配置也会被捞进包里。
+        """
+        a = self.app
+        path = _req(body, "path", "实验路径")
+        box = {}
+
+        def worker(t):
+            res = labpack.export_lab(a, path, progress=lambda m: t.update(stage=m))
+            box.update(res)
+            t.update(file=res["file"],
+                     message="%d 节点 / %d 网络 / %d 个配置 / %d 个文本框"
+                             % (res["nodes"], res["networks"], res["configs"],
+                                res["textboxes"]))
+
+        t = a.tasks.create("lab-export", "导出拓扑 %s" % os.path.basename(path), worker)
+        a.log("导出拓扑 %s → 任务 %s" % (path, t.id))
+        return self._json({"ok": True, "tid": t.id})
+
+    def _lab_import(self, q):
+        """导入拓扑：请求体是 zip，同步还原成一台新实验。"""
+        a = self.app
+        a.require(ssh=True)
+        total = int(self.headers.get("Content-Length") or 0)
+        if total <= 0:
+            raise labpack.PackError("没有收到文件内容")
+        if total > (64 << 20):
+            raise labpack.PackError("包太大（%.1f MB，上限 64MB）" % (total / 1048576.0))
+
+        tmpdir = os.path.join(tempfile.gettempdir(), "eve-desktop")
+        os.makedirs(tmpdir, exist_ok=True)
+        local = os.path.join(tmpdir, "labpack-%d.zip" % int(time.time() * 1000))
+        with open(local, "wb") as f:
+            remain = total
+            while remain > 0:
+                chunk = self.rfile.read(min(262144, remain))
+                if not chunk:
+                    break
+                f.write(chunk)
+                remain -= len(chunk)
+        try:
+            res = labpack.import_lab(a, local, q.get("folder") or "", q.get("name") or "")
+        finally:
+            try:
+                os.remove(local)
+            except OSError:
+                pass
+        a.log("导入拓扑 → %s（%d 节点 / %d 个配置）"
+              % (res["path"], res["nodes"], res["configs"]))
+        return self._json({"ok": True, **res})
 
     # ---------- 静态 ----------
     def _static(self, path):

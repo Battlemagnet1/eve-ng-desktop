@@ -24,6 +24,7 @@ It is not an image repository and does not download images — images are only i
 | Node icons | Three optional shapes: **circle = router / horizontal bar = switch / vertical bar = firewall** (context menu or inspector, can be applied to a multi-selection) |
 | Nodes | Start / stop / wipe, whole-lab batch start-stop, property view, NIC wiring editor, create cloud |
 | Text boxes | Put **any number of free-form labels** on the canvas (right-click empty space → “Add text boxes…”, one input per box, “Add” appends two at a time): multi-line text, drag, marquee-select several and move them together, double-click to edit, right-click to delete/copy; three sizes and five colors. Stored locally, **never written into the `.unl`** |
+| Move | **Export** a lab to a zip (topology + links + **node configs** + text boxes) and **import** it on any EVE to create a new lab; works across CE / Pro and across servers |
 | Interface | **Chinese / English switch**, **dark / light theme switch**, both instant and remembered on this machine; covers all UI text including backend error messages |
 | Terminals | Node CLI console (telnet over SSH), EVE host shell, GUI console (embedded EVE html5, covering VNC/RDP) |
 | Capture | Start a capture on any NIC of a running node (tcpdump over SSH) — **Wireshark pops up locally and streams live** while the pcap is archived; BPF filters supported |
@@ -308,6 +309,93 @@ Afterwards:
 > bring the labels along**, because they are not inside the `.unl`. That is a deliberate
 > trade-off: labels belong to this machine rather than polluting the lab file.
 
+## Export / Import a topology
+
+Move a lab from one server to another — **including every node's saved configuration** — or
+just rebuild it somewhere else. The “Export” and “Import” buttons are on the toolbar, right
+after “Reload”.
+
+| Action | Result |
+|---|---|
+| **Export** | Packs the current lab into a zip in the export directory (Desktop by default), named `<lab>-<timestamp>.zip`; the task bar shows progress and its “Download” link gives you the file again |
+| **Import** | Pick a zip; a **new lab** is created on the currently connected server and opened automatically — topology, links, node properties, **node configs** and text boxes all come back |
+
+Verified path: **CE 6.2 → Pro 7.2** (172.30.50.123 → 172.30.56.229). 10 nodes / 8 networks /
+8 links all survived, and `name / template / image / ram / left / top` matched node by node;
+nodes that had a config loaded it as soon as they were started.
+
+### What is inside the pack
+
+| File | Contents |
+|---|---|
+| `manifest.json` | Format id and version, export time, source (server / version / lab path / lab id), node and network lists, counts |
+| `lab.unl` | The EVE lab file **as-is**: topology plus the node configs embedded in `<objects><configs>` |
+| `textboxes.json` | The topology text boxes (local side-car data; without it they are lost) |
+| `configs/<id>-<name>.cfg` | Only present when some config was found in the runtime directory but not stored in the `.unl`; plain text, human readable |
+
+### Why the configs travel inside the `.unl`
+
+`config="1"` on an EVE node is only a flag meaning “this node has a saved config”. The config
+itself is not a node property — it lives in the lab file:
+
+```xml
+<lab>
+  <objects>
+    <configs>
+      <config id="1">…base64 of the raw config text…</config>
+    </configs>
+  </objects>
+</lab>
+```
+
+The two places in EVE that do this:
+
+- **write**: `__lab.php:1338` → `$xml->objects->configs->addChild('config', base64_encode($config_data))`
+- **read**: `cli.php:843` → `if ($n->getConfig()=='1' && $n->getConfigData()!='') dumpConfig(…, 'startup-config')`
+
+So **copying the `.unl` copies the configs too**, and `/opt/unetlab/tmp/` never has to be touched.
+
+> Do not try the other route — pre-creating the runtime directory on the target and dropping a
+> `startup-config` into it. `cli.php:746` reads
+> `if (is_dir($n->getRunningPath())) !touch(…'.prepared')`, and in PHP `!touch()` **still calls
+> `touch()`**: as soon as the runtime directory exists, EVE considers the node “prepared” and
+> skips all preparation (no IOL jail, no qemu linked clone), so the node can never start. We hit
+> this one: `Failed to start node (12)` with `status` stuck at 0.
+
+### What import does
+
+1. Creates a **new lab** on the target server (never overwrites anything; on a name clash it
+   becomes `name-1` and says so)
+2. Writes the merged `.unl` and runs `chown www-data:www-data` + `chmod 644` **on that file only**
+3. Re-parses it through the EVE API and compares node counts; on mismatch the file is deleted
+   again, so no half-broken lab is left behind
+4. Restores the text boxes (recorded for “target server + new lab path”, your existing labels
+   are not overwritten)
+5. Opens the lab
+
+Node properties (template, image, RAM, NIC count, port wiring, canvas coordinates) are part of
+the `.unl`, so they are complete on arrival. **On start EVE dumps the embedded config into
+`startup-config`**, so pressing “Start” is all it takes — there is no separate “apply config” step.
+
+### Requirements and limits
+
+- **SSH is required**: reading and writing `.unl` files goes over SSH (the REST API does not
+  expose the raw lab file). Without SSH configured you get a prompt to fill in the credentials
+  and **nothing on the server is touched**.
+- **64 MB pack limit** (enforced from `Content-Length`); real labs are tens of KB to a few MB.
+- **Images do not travel with the pack**: no qemu / iol image binaries inside. If the target
+  lacks an image the topology still imports completely, but those nodes cannot start — import
+  the image first. The result message names the nodes that are affected.
+- **Runtime state does not travel**: imported nodes are all stopped, and temporary files from
+  the runtime directory (logs, pids, intermediates) are not packed — EVE regenerates them anyway.
+- **Unknown packs are rejected**: a missing `manifest.json`, a wrong `format`, or a pack newer
+  than the app fails immediately and nothing is written to the lab library.
+- **Unknown templates are rejected by EVE**: if a node uses a template the target EVE does not
+  know at all (possible across major versions), EVE raises `invalid node template` while parsing,
+  and the import deletes the file it just created and reports the error — no broken lab is left.
+  A template that exists but has no image does **not** block the import; it is only mentioned in
+  the result message.
+
 ## Interface language and theme
 
 Two buttons at the top right, effective immediately — **no restart**:
@@ -434,6 +522,7 @@ core/
   capture.py        capture (server-side tcpdump + streaming + local Wireshark)
   clip.py           Windows clipboard access (ctypes, for the terminal)
   notes.py          topology text boxes (local sidecar file, never inside .unl)
+  labpack.py        topology export / import (.unl moved as-is, embedded node configs included)
   server.py         local HTTP routes (binds 127.0.0.1 only)
   tasks.py          background tasks and progress
 web/                front end (xterm.js vendored locally, i18n.js for language/theme)
@@ -475,6 +564,10 @@ web/                front end (xterm.js vendored locally, i18n.js for language/t
 | Wireshark not found | Install [Wireshark](https://www.wireshark.org/); the file is already saved and its path is shown |
 | `tcpdump: command not found` | `apt-get install -y tcpdump` on the server |
 | Dragging pans the canvas instead of moving a node | Left-drag on empty space is box-select (EVE habit); pan with **right-drag**, **hold Space and drag**, middle-drag or `Alt`+left-drag |
+| “This feature needs SSH” on export/import | Packs read and write the `.unl` on the server, and the REST API does not expose the raw file. Fill in the SSH credentials under Settings (EVE default `root/eve`) |
+| Import fails with “EVE could not parse the topology, rolled back: invalid node template …” | The pack uses a template that EVE on the target does not know (possible across major versions). The file just created was deleted, so no broken lab is left; switch those nodes to a template the target has |
+| Import succeeded but warns “Images are missing on this server, these nodes cannot start” | The topology is complete; the images just are not installed. Import them from the image library, then start the nodes |
+| Nodes start after import but their config is empty | Those nodes had no saved config to begin with (`config` is not `1` on the source node). Configs travel inside the `.unl`, so nothing on the source means nothing on the target |
 | `% Invalid input at '^'` after typing | Old bug with NAWS before negotiation. Fixed |
 
 ---
