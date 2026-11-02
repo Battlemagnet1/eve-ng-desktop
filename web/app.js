@@ -78,25 +78,34 @@ function b64bytes(b64) {
 }
 
 /* ------------------------------------------------------------------ 弹窗 */
-function modal(title, fields) {
+/* opts: { ok: 确认按钮文字, danger: 红色确认键, desc: 标题下的一段说明 }
+   危险操作（删除）默认把焦点放在「取消」上，回车也不会替你确认。 */
+function modal(title, fields, opts) {
+  opts = opts || {};
   return new Promise(resolve => {
     const wrap = document.createElement('div');
     wrap.className = 'modal-mask';
     const rows = fields.map((f, i) => {
       if (f.type === 'select') {
-        const opts = f.options.map(o =>
+        const opts2 = f.options.map(o =>
           `<option value="${esc(o.value)}"${o.value == f.value ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
-        return `<label>${esc(f.label)}<select data-i="${i}">${opts}</select></label>`;
+        return `<label>${esc(f.label)}<select data-i="${i}">${opts2}</select></label>`;
       }
       return `<label>${esc(f.label)}<input data-i="${i}" type="${f.type || 'text'}"
         value="${esc(f.value == null ? '' : f.value)}"></label>`;
     }).join('');
-    wrap.innerHTML = `<div class="modal"><h3>${esc(title)}</h3><div class="mbody">${rows}</div>
+    // 一行一个 div：i18n 是按文本节点整句匹配的，整段落塞一个节点就翻不出来
+    const desc = opts.desc
+      ? `<div class="mdesc">${String(opts.desc).split('\n')
+          .map(s => `<div>${esc(s)}</div>`).join('')}</div>`
+      : '';
+    wrap.innerHTML = `<div class="modal"><h3>${esc(title)}</h3>${desc}<div class="mbody">${rows}</div>
       <div class="mfoot"><button class="btn ghost" data-x="0">取消</button>
-      <button class="btn" data-x="1">确定</button></div></div>`;
+      <button class="btn${opts.danger ? ' danger' : ''}" data-x="1">${esc(opts.ok || '确定')}</button></div></div>`;
     document.body.appendChild(wrap);
     const first = wrap.querySelector('input,select');
     if (first) { first.focus(); first.select && first.select(); }
+    else if (opts.danger) wrap.querySelector('[data-x="0"]').focus();   // 别让回车误删
     const done = ok => {
       const out = {};
       if (ok) wrap.querySelectorAll('[data-i]').forEach(el => { out[fields[+el.dataset.i].key] = el.value; });
@@ -109,7 +118,7 @@ function modal(title, fields) {
       else if (e.target === wrap) done(false);
     });
     wrap.addEventListener('keydown', e => {
-      if (e.key === 'Enter') done(true);
+      if (e.key === 'Enter' && !opts.danger) done(true);
       if (e.key === 'Escape') done(false);
     });
   });
@@ -212,15 +221,82 @@ function renderLabs() {
   if (S.cwd) html += `<div class="lab-item" data-up="1"><span class="ico">↑</span>上一级</div>`;
   (S.labs.folders || []).forEach(f => {
     html += `<div class="lab-item" data-dir="${esc(f.path || f.name)}">
-      <span class="ico">▸</span><span data-notrans>${esc(f.name)}</span></div>`;
+      <span class="ico">▸</span><span class="nm" data-notrans>${esc(f.name)}</span></div>`;
   });
   (S.labs.labs || []).forEach(l => {
     const on = l.path === S.labPath ? ' on' : '';
     html += `<div class="lab-item${on}" data-lab="${esc(l.path)}">
-      <span class="ico">◈</span><span data-notrans>${esc(l.name)}</span>
-      <span class="tag">${esc((l.mtime || '').slice(0, 11))}</span></div>`;
+      <span class="ico">◈</span><span class="nm" data-notrans>${esc(l.name)}</span>
+      <span class="tag">${esc((l.mtime || '').slice(0, 11))}</span>
+      <span class="del" data-dellab="${esc(l.path)}" title="删除这个拓扑">✕</span></div>`;
   });
   tree.innerHTML = html || '<div class="empty">空目录</div>';
+}
+
+/* 删拓扑。不可撤销，所以先把「里面有什么」摆出来：
+   节点数、几个在跑（在跑的会被先停掉才删得掉）。
+   拉详情要等一两秒，这期间按住不放会点出第二个确认框 —— 用 _deleting 挡掉。 */
+const _deleting = new Set();
+
+async function deleteLab(path) {
+  if (!path || _deleting.has(path)) return;
+  _deleting.add(path);
+  try {
+    const name = path.split('/').pop().replace(/\.unl$/i, '');
+    let total = 0, running = 0;
+    try {
+      // 拉一次实验详情（节点数、几个在跑）。Pro 上这个接口要一两秒，
+      // 先给个提示，免得用户以为点了没反应
+      toast('读取实验信息…');
+      const d = await api('/api/lab?path=' + encodeURIComponent(path));
+      total = d.total || 0;
+      running = d.running || 0;
+    } catch (e) {
+      // 详情拉不到不挡删除，只是报不出节点数；真不存在了后端也会拦
+    }
+    const lines = [];
+    lines.push(total ? `这个实验有 ${total} 个节点，会被连同节点配置一起删除。`
+                     : '这个实验会被连同节点配置一起删除。');
+    if (running) lines.push(`其中 ${running} 个节点正在运行，会先停掉再删。`);
+    lines.push('删除后无法恢复。');
+
+    // 名字放标题里：列表里点的就是它，一眼能对上；说明里只写后果
+    const f = await modal('删除拓扑 · ' + name, [], {
+      desc: lines.join('\n'),
+      ok: '删除',
+      danger: true,
+    });
+    if (!f) return;
+
+    toast('正在删除 ' + name + '…');
+    // 后端会先把还在跑的节点停掉再删，所以要等几秒
+    const d = await api('/api/lab?path=' + encodeURIComponent(path), { method: 'DELETE' });
+    toast(`已删除 ${name}（${d.nodes || 0} 个节点）`, 'ok', 4000);
+    if (S.labPath === path) closeLab();          // 删的就是正开着的，画布收摊
+    await loadLabs(S.cwd);
+  } catch (e) {
+    fail(e);
+  } finally {
+    _deleting.delete(path);
+  }
+}
+
+/* 清空画布，回到「没选实验」的状态（删掉当前实验后调用） */
+function closeLab() {
+  stopPoll();
+  S.labPath = '';
+  S.lab = null;
+  S.sel = null;
+  S.selIds = [];
+  S.texts = [];
+  S.tbxSel = [];
+  S.viewReady = false;
+  S.ifaces = {};
+  try { history.replaceState(null, '', '#lab='); } catch (e) {}
+  $('#labTitle').textContent = '未选择实验';
+  $('#stageHint').style.display = '';
+  renderInspector(null);
+  renderTopology();
 }
 
 /* 新建空实验：建在当前浏览的目录下，建好直接打开 */
@@ -2091,6 +2167,12 @@ function bind() {
   $('#labTree').onclick = e => {
     const up = e.target.closest('[data-up]');
     if (up) { const p = S.cwd.split('/'); p.pop(); loadLabs(p.join('/')).catch(fail); return; }
+    const del = e.target.closest('[data-dellab]');
+    if (del) {                                    // 删除按钮在列表项里，先拦下来别打开实验
+      e.stopPropagation();
+      deleteLab(del.dataset.dellab).catch(fail);
+      return;
+    }
     const d = e.target.closest('[data-dir]');
     if (d) { loadLabs(d.dataset.dir).catch(fail); return; }
     const l = e.target.closest('[data-lab]');

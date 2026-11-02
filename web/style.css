@@ -140,8 +140,19 @@ button{cursor:pointer}
 .lab-item:hover{background:var(--panel2);color:var(--txt)}
 .lab-item.on{background:var(--accent2);color:var(--on)}
 .lab-item .ico{width:14px;text-align:center;opacity:.8}
+.lab-item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .lab-item .tag{margin-left:auto;font-size:10px;color:var(--txt3)}
 .lab-item.on .tag{color:var(--on-soft)}
+/* 删除：平时藏起来（列表项本来就窄，常驻一排 ✕ 太吵），指上去才露出来 */
+.lab-item .del{
+  flex:0 0 15px;width:15px;height:15px;line-height:14px;text-align:center;
+  border-radius:4px;font-size:10px;color:var(--txt3);opacity:0;
+  transition:opacity .1s,background .1s,color .1s;
+}
+.lab-item:hover .del{opacity:.75}
+.lab-item.on .del{color:var(--on-soft)}
+.lab-item .del:hover{opacity:1;color:var(--err);background:var(--sunk)}
+.lab-item.on .del:hover{background:rgba(0,0,0,.22);color:#fff}
 
 /* ---------- 拓扑 ---------- */
 .center{flex:1;display:flex;flex-direction:column;min-width:0}
@@ -252,7 +263,7 @@ button{cursor:pointer}
 /* ---------- 通用控件 ---------- */
 .btn{
   background:var(--accent);border:0;color:var(--on);padding:7px 14px;border-radius:6px;
-  font-weight:500;
+  font-weight:500;white-space:nowrap;      /* 英文标签比中文长，别让「Start all」折成两行 */
 }
 .btn:hover{filter:brightness(1.08)}
 .btn:disabled{opacity:.45;cursor:not-allowed}
@@ -261,6 +272,7 @@ button{cursor:pointer}
 .btn.ghost:hover{border-color:var(--accent);color:var(--txt-strong);background:transparent}
 .btn.ghost.on{border-color:var(--accent);color:var(--txt-strong);background:rgba(59,130,246,.16)}
 .btn.danger{background:var(--err)}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 input,select,textarea{
   background:var(--panel2);border:1px solid var(--line2);border-radius:6px;
   padding:7px 10px;outline:none;width:100%;
@@ -413,7 +425,17 @@ a.btn{display:inline-block;text-decoration:none;text-align:center}
   align-items:center;justify-content:center;z-index:90}
 .modal{width:420px;background:var(--panel);border:1px solid var(--line2);
   border-radius:12px;padding:18px 20px 14px;box-shadow:var(--shadow-lg)}
-.modal h3{margin:0 0 14px;font-size:14.5px;font-weight:600}
+.modal h3{
+  margin:0 0 14px;font-size:14.5px;font-weight:600;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;   /* 实验名可能很长 */
+}
+.modal .mdesc{
+  font-size:12px;color:var(--txt2);line-height:1.68;margin:-6px 0 2px;
+  white-space:pre-line;                      /* 说明里的换行要按换行显示 */
+  max-height:180px;overflow:auto;
+}
+.modal .mdesc:empty{display:none}
+.modal .mbody:empty{display:none}
 .modal .mbody{display:flex;flex-direction:column;gap:11px}
 .modal .mbody label{display:flex;flex-direction:column;gap:5px;font-size:11.5px;color:var(--txt3)}
 .modal .mfoot{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}

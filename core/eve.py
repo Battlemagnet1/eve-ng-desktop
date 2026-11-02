@@ -252,6 +252,29 @@ class EveSession:
     def lab_meta(self, path):
         return self.get("/api/labs/%s" % _q(path))
 
+    def delete_lab(self, path):
+        """删掉整个实验（.unl）。**调用前必须先把节点停掉**。
+
+        Pro 7.2 在节点还运行时直接删会回
+        400「Failed to delete Lab - Nodes still running (60069)」，删不掉；
+        CE 6.2 虽然回 200，但会把 qemu/iol 进程和 /opt/unetlab/tmp/<tenant>/<uuid>
+        留在那儿（之后起节点抢端口、status 报 2 的假象就是从这来的）。
+        停机 + 等待的逻辑放在 server 层，这里只发请求。
+        """
+        path = (path or "").strip("/")
+        if not path:
+            raise EveError("没指定实验路径")
+        return self.delete("/api/labs/%s" % _q(path))
+
+    def lab_exists(self, path):
+        """实验还在不在。删除后复核用 —— EVE 偶尔回 200 却没真删。"""
+        try:
+            return bool(self.lab_meta(path))
+        except EveError as e:
+            if getattr(e, "code", None) in (404, 60000):
+                return False
+            raise
+
     def lab_nodes(self, path):
         data = self.get("/api/labs/%s/nodes" % _q(path))
         return _keyed(data)

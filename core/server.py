@@ -303,6 +303,75 @@ class App:
         self.log("删除网络 %s" % nid)
         return {"ok": True, "umtime": self.eve.lab_umtime(path)}
 
+    def delete_lab(self, path):
+        """删掉整个实验（拓扑 + 节点配置，删了就没了）。
+
+        顺序是硬性的：先停掉还在跑的节点、等 EVE 把它们收干净，再删文件。
+        Pro 7.2 在节点运行时直接删会回 400「Nodes still running (60069)」；
+        CE 6.2 会回 200，但把进程和 /opt/unetlab/tmp/<tenant>/<uuid> 留下，
+        后面再建实验起节点就抢端口、status 报 2 的假象就是从这来的。
+        """
+        eve = self.require()
+        path = (path or "").strip("/")
+        if not path:
+            raise EveError("没指定实验路径")
+        if ".." in path.split("/"):
+            raise EveError("实验路径不合法：%s" % path)
+        if not path.lower().endswith(".unl"):
+            raise EveError("只能删实验文件（.unl），%s 不是" % path)
+
+        try:
+            nodes = eve.lab_nodes(path) or {}
+        except EveError as e:
+            if getattr(e, "code", None) in (404, 60000):
+                raise EveError("这个实验已经不在了（可能被别的会话删掉），刷新一下列表")
+            raise
+        running = [nid for nid, nd in nodes.items() if _status(nd) >= 2]
+        if running:
+            self.log("删除实验前先停 %d 个运行中的节点" % len(running))
+        wait = []                       # 停成功、需要等它真的退出的节点
+        for nid in sorted(running, key=lambda x: int(x)):
+            try:
+                eve.node_action(path, nid, "stop")
+                wait.append(nid)
+            except EveError as e:
+                # 报错一般是「本来就没在跑」；这种不用等，直接删
+                self.log("停节点 %s 失败（跳过等待）：%s" % (nid, e), "warn")
+
+        # stop 是异步的：进程没收完之前 delete 只会回 60069，先等一会儿。
+        # 但 CE 的 getStatus 是 `netstat | grep :<端口>`，端口一旦被别的进程占着，
+        # 没跑起来的节点也会永远报 2（假运行）。所以等不到不能直接放弃 ——
+        # 照样往下删，让 EVE 自己裁决：真没停 Pro 会回 60069，那时再报错。
+        left = list(wait)
+        deadline = time.time() + 5
+        while left and time.time() < deadline:
+            time.sleep(0.6)
+            still = []
+            for nid in left:
+                try:
+                    if _status(eve.node(path, nid) or {}) >= 2:
+                        still.append(nid)
+                except EveError:
+                    pass            # 查不到就不当它还在跑，交给 delete 的返回值说话
+            left = still
+        if left:
+            self.log("节点 %s 仍报运行（CE 上常是端口被占的假象），直接尝试删除"
+                     % "、".join(str(x) for x in left), "warn")
+
+        try:
+            eve.delete_lab(path)
+        except EveError as e:
+            if left:
+                raise EveError("删不掉：还有 %d 个节点没停下来（%s）。先手动停机再删。"
+                               "服务器原话：%s"
+                               % (len(left), "、".join(str(x) for x in left), e))
+            raise
+        if eve.lab_exists(path):
+            raise EveError("服务器回了成功，但实验文件还在（%s）—— 可能被别的会话锁着，"
+                           "去网页里确认一下" % path)
+        self.log("已删除实验 %s（%d 个节点）" % (path, len(nodes)))
+        return {"ok": True, "path": path, "nodes": len(nodes), "stopped": len(running)}
+
     def lab_ifaces(self, path):
         """一次把整个实验所有节点的网卡拉回来，供拓扑上画接口点。
 
@@ -664,6 +733,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/lab/network":
                 return self._json({"ok": True, **self.app.delete_network(
                     q.get("path"), q.get("id"), q.get("umtime"))})
+            if path == "/api/lab":
+                return self._json(self.app.delete_lab(q.get("path")))
             return self._err("未知接口", 404)
         except (EveError, RemoteError, ValueError) as e:
             return self._err(getattr(e, "message", str(e)), 400)

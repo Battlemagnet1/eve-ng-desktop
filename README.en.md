@@ -25,6 +25,7 @@ It is not an image repository and does not download images — images are only i
 | Nodes | Start / stop / wipe, whole-lab batch start-stop, property view, NIC wiring editor, create cloud |
 | Text boxes | Put **any number of free-form labels** on the canvas (right-click empty space → “Add text boxes…”, one input per box, “Add” appends two at a time): multi-line text, drag, marquee-select several and move them together, double-click to edit, right-click to delete/copy; three sizes and five colors. Stored locally, **never written into the `.unl`** |
 | Move | **Export** a lab to a zip (topology + links + **node configs** + text boxes) and **import** it on any EVE to create a new lab; works across CE / Pro and across servers |
+| Cleanup | Hover a lab in the list and an **✕** appears on its right; confirm to delete the whole topology (running nodes are stopped first). If it was the lab you had open, the canvas clears itself |
 | Interface | **Chinese / English switch**, **dark / light theme switch**, both instant and remembered on this machine; covers all UI text including backend error messages |
 | Terminals | Node CLI console (telnet over SSH), EVE host shell, GUI console (embedded EVE html5, covering VNC/RDP) |
 | Capture | Start a capture on any NIC of a running node (tcpdump over SSH) — **Wireshark pops up locally and streams live** while the pcap is archived; BPF filters supported |
@@ -445,6 +446,27 @@ the `.unl`, so they are complete on arrival. **On start EVE dumps the embedded c
   and the import deletes the file it just created and reports the error — no broken lab is left.
   A template that exists but has no image does **not** block the import; it is only mentioned in
   the result message.
+
+## Deleting a topology
+
+Labs pile up. **Hover a lab** in the sidebar and a small **✕** shows up on its right
+(nothing is shown until you hover, so you cannot hit it by accident). Clicking it opens a
+confirmation dialog that states **how many nodes the lab has** and **how many are running**.
+
+- **It deletes the whole lab**: the `.unl` goes away together with its embedded node configs.
+  **No undo.**
+- **Running nodes are stopped first**, and that order is mandatory: Pro 7.2 refuses to delete
+  a lab with running nodes (`400 Failed to delete Lab - Nodes still running (60069)`), while
+  CE 6.2 answers 200 but leaves the processes and `/opt/unetlab/tmp/<tenant>/<uuid>` behind —
+  which is exactly how nodes later end up fighting over ports and reporting a bogus `status` 2.
+- After deleting, the lab is **read back to confirm the file is really gone** (EVE occasionally
+  answers “success” without deleting). If it is still there you get an explicit error instead of
+  a fake success.
+- If the lab was the one you had open, the canvas closes and returns to “No lab selected”.
+- Cancel, clicking outside, and `Esc` all leave it alone; in a destructive dialog the focus sits
+  on **Cancel**, so pressing Enter cannot delete anything by accident.
+- Only labs are deleted, **folders are not**: an emptied folder stays behind — remove it in the
+  EVE web UI if you want it gone.
 
 ## Interface language and theme
 

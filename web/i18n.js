@@ -134,6 +134,19 @@
     '保存并连接': 'Save & connect',
     '删除网络': 'Delete network',
     '删除节点': 'Delete node',
+    '删除拓扑': 'Delete lab',
+    '删除拓扑 · {}': 'Delete lab · {}',
+    '删除这个拓扑': 'Delete this lab',
+    '这个实验有 {} 个节点，会被连同节点配置一起删除。':
+      'This lab has {} nodes. They will be deleted together with their configs.',
+    '这个实验会被连同节点配置一起删除。':
+      'This lab will be deleted together with its node configs.',
+    '其中 {} 个节点正在运行，会先停掉再删。':
+      '{} of its nodes are running; they will be stopped first.',
+    '删除后无法恢复。': 'This cannot be undone.',
+    '正在删除 {}…': 'Deleting {}…',
+    '读取实验信息…': 'Reading lab details…',
+    '已删除 {}（{} 个节点）': 'Deleted {} ({} nodes)',
     '取消选择': 'Clear selection',
     '全选节点': 'Select all nodes',
     '新建实验': 'New lab',
