@@ -402,6 +402,13 @@ class App:
         self.eve.move_node(path, nid, left, top)
         return {"ok": True, "umtime": self.eve.lab_umtime(path)}
 
+    def move_network(self, path, nid, left, top, umtime=None):
+        """挪网络/云图标。和挪节点一样只写坐标，不碰接在它上面的网卡。"""
+        self.require()
+        self._guard(path, umtime)
+        self.eve.move_network(path, nid, left, top)
+        return {"ok": True, "umtime": self.eve.lab_umtime(path)}
+
     def link_nodes(self, path, a, b, net_id=None, name=None, left=None, top=None,
                    umtime=None):
         """把两个节点的网卡接到同一个网络上（界面上就是「一台拖到另一台」。）
@@ -827,6 +834,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/node/move":
             return self._json({"ok": True, **a.move_node(
                 _req(body, "path", "实验路径"), _req(body, "id", "节点 id"),
+                body.get("left"), body.get("top"), body.get("umtime"))})
+        if path == "/api/net/move":
+            return self._json({"ok": True, **a.move_network(
+                _req(body, "path", "实验路径"), _req(body, "id", "网络 id"),
                 body.get("left"), body.get("top"), body.get("umtime"))})
         if path == "/api/lab/link":
             return self._json({"ok": True, **a.link_nodes(

@@ -439,6 +439,14 @@ class EveSession:
         body.update({k: v for k, v in (props or {}).items() if v is not None})
         return self.put("/api/labs/%s/networks/%s" % (_q(path), nid), body)
 
+    def move_network(self, path, nid, left, top):
+        """只改网络（云）坐标。和 move_node 一样只发 id/left/top。
+
+        云图标原来在界面上拖不动，只能删了重加 —— 但 EVE 的 `.unl` 里
+        network 也有 left/top，走 editNetwork 就能挪，不用动别的属性。
+        """
+        return self.edit_network(path, nid, {"left": int(left), "top": int(top)})
+
     def delete_network(self, path, nid):
         """删网络。EVE 会连带把接在上面的网卡断线。
 

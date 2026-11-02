@@ -443,7 +443,11 @@ a.btn{display:inline-block;text-decoration:none;text-align:center}
 /* ---------- 模板库（二期：新建节点） ---------- */
 .nd{cursor:grab}
 .nd.dragging{cursor:grabbing;opacity:.85;z-index:5}
-.net{cursor:context-menu}
+/* 云/网络图标也能拖：原来 cursor 是 context-menu（只能右键），
+   用起来像「拖不动」，现在给抓手，拖动时提亮 */
+.net{cursor:grab}
+.net:hover{color:var(--txt-strong)}
+.net.dragging{cursor:grabbing;opacity:.85;z-index:5}
 .palette,.cappanel{
   position:absolute;top:10px;right:12px;width:290px;max-height:calc(100% - 60px);
   display:none;flex-direction:column;z-index:12;

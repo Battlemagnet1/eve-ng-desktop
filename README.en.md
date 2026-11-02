@@ -237,7 +237,7 @@ The canvas follows EVE's own habits:
 | Editable properties | Name (auto-numbered, e.g. R6), image, RAM (MB), NIC count, serial count |
 | Selection | Click to select; `Ctrl`/`Shift`+click to add; **drag on empty space = box select** (live highlight) |
 | Pan / zoom | **Right-drag, Space+left-drag, middle-drag or `Alt`+left-drag** to pan; wheel zooms around the cursor; the `− 100% ＋ ⤢` control sits bottom-right; arrow keys nudge. **Each lab remembers its own view** |
-| Moving | Drag a node; a multi-selection moves together. Dragging only changes local coordinates — it is written back to EVE **on release** |
+| Moving | Drag a node; a multi-selection moves together. **Cloud / network icons are draggable too** (networks carry coordinates in the `.unl` as well). Dragging only changes local coordinates — it is written back to EVE **on release** |
 | Right-click (empty) | **Add text boxes…** / Add node… / Add network (cloud)… / Select all nodes / Fit / Reset to 100% / Reload |
 | Right-click (node) | CLI console, start, stop, properties…, **icon…**, link to network…, capture…, wipe, delete |
 | Right-click (multi) | Batch start / stop / wipe / delete, bulk connect, **uniform icon…**, clear selection |

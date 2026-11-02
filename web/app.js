@@ -2283,6 +2283,7 @@ function bind() {
   const stage = $('#stage');
   const SVGNS = 'http://www.w3.org/2000/svg';
   let pan = null, ndrag = null, mq = null, suppressClick = 0, tbxDrag = null;
+  let netDrag = null;              // 拖云/网络图标（EVE 里 network 也有 left/top）
   const ndEl = id => document.querySelector(`.nd[data-id="${id}"]`);
 
   stage.addEventListener('mousedown', e => {
@@ -2330,6 +2331,20 @@ function bind() {
         }).filter(Boolean),
       };
       suppressClick = Date.now();
+      return;
+    }
+    const netEl = e.target.closest('.net');
+    if (netEl && S.lab) {                                          // 拖云/网络图标
+      if (e.button !== 0) return;       // 右键留给「平移视角」，别当成拖图标
+      const nid = netEl.dataset.netId;
+      const net = (S.lab.networks || {})[nid];
+      if (!net) return;
+      e.preventDefault();          // 别把拖动变成选文字
+      netDrag = {
+        id: nid, net, el: netEl, x: e.clientX, y: e.clientY,
+        ox: Number(net.left || 0), oy: Number(net.top || 0), moved: false,
+      };
+      netEl.classList.add('dragging');
       return;
     }
     const el = e.target.closest('.nd');
@@ -2404,6 +2419,18 @@ function bind() {
         it.t.x = nx;
         it.t.y = ny;
       });
+      return;
+    }
+    if (netDrag) {
+      const dx = (e.clientX - netDrag.x) / S.z, dy = (e.clientY - netDrag.y) / S.z;
+      if (!netDrag.moved && Math.abs(dx) + Math.abs(dy) < 2) return;
+      netDrag.moved = true;
+      const nx = Math.round(netDrag.ox + dx), ny = Math.round(netDrag.oy + dy);
+      netDrag.el.style.left = nx + 'px';
+      netDrag.el.style.top = ny + 'px';
+      netDrag.net.left = nx;
+      netDrag.net.top = ny;
+      drawLinks();                 // 线上的端点按节点/网络坐标算，得跟着走
       return;
     }
     if (ndrag) {
@@ -2490,6 +2517,21 @@ function bind() {
       const d = tbxDrag;
       tbxDrag = null;
       if (d.moved) { saveTexts(); suppressClick = Date.now(); }
+      return;
+    }
+
+    if (netDrag) {
+      const d = netDrag;
+      netDrag = null;
+      d.el.classList.remove('dragging');
+      if (!d.moved) return;            // 没真拖动就是一次普通点击（选中网络）
+      suppressClick = Date.now();      // 拖完紧跟的 click 别把选择重置掉
+      api('/api/net/move', { method: 'POST', body: guarded({
+        path: S.labPath, id: d.id,
+        left: Math.round(Number(d.net.left || 0)),
+        top: Math.round(Number(d.net.top || 0)) }) })
+        .then(afterWrite)
+        .catch(err => { fail(err); openLab(S.labPath).catch(() => {}); });
       return;
     }
 
