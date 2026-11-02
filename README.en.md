@@ -325,17 +325,37 @@ after “Reload”.
 > there. The folder picker remembers the last directory you chose.
 
 Verified path: **CE 6.2 → Pro 7.2** (172.30.50.123 → 172.30.56.229). 10 nodes / 8 networks /
-8 links all survived, and `name / template / image / ram / left / top` matched node by node;
-nodes that had a config loaded it as soon as they were started.
+8 links all survived, and `name / template / image / ram / left / top` matched node by node.
+
+Configs were verified item by item too: change the hostname on a device **without saving**,
+export → import on the other server → start the node → the console prompt is the changed name
+(`R1-LIVE#`, and `show run` agrees), not the stale config from the pack.
 
 ### What is inside the pack
 
 | File | Contents |
 |---|---|
-| `manifest.json` | Format id and version, export time, source (server / version / lab path / lab id), node and network lists, counts |
+| `manifest.json` | Format id and version, export time, source (server / version / lab path / lab id), node and network lists, whether each node has a config and **where it came from**, counts |
 | `lab.unl` | The EVE lab file **as-is**: topology plus the node configs embedded in `<objects><configs>` |
 | `textboxes.json` | The topology text boxes (local side-car data; without it they are lost) |
-| `configs/<id>-<name>.cfg` | Only present when some config was found in the runtime directory but not stored in the `.unl`; plain text, human readable |
+| `configs/<id>-<name>.cfg` | One **plain-text** config per node that has one — easy to read in any editor, and easy to write back node by node on import |
+
+### Where the configs come from (in order of trust)
+
+For every node the exporter takes the first source that yields something:
+
+1. **Node is running → read the live `running-config` from the device**
+   - This is the accurate one: if you typed a config on the device but never pressed “Save” in
+     EVE, the `.unl` still holds the old version and only the device knows the new one
+   - iOL goes through EVE's own path: `wrconf_iol.py -p <port>` makes the device write its config
+     into NVRAM, then `iou_export` extracts it from `nvram_*`
+   - qemu templates (vios / csr / nxos / vsrx …) use `config_scripts/<template script> -a get`
+   - **linux / windows / docker are skipped** — they are not config-file driven devices
+2. **Node not running → the config embedded in the `.unl`** (the one EVE saved)
+3. Failing that → a leftover `startup-config` in the runtime directory
+
+`manifest.json` records `config_source` (`device` / `unl` / `startup-config`) for every node, so
+you can tell where a given device's config came from just by reading the manifest.
 
 ### Why the configs travel inside the `.unl`
 
@@ -359,6 +379,12 @@ The two places in EVE that do this:
 
 So **copying the `.unl` copies the configs too**, and `/opt/unetlab/tmp/` never has to be touched.
 
+**Note the two conditions on the read side**: having the config data is not enough — the node's
+`config` attribute must be `"1"`. With the data present but the flag at `"0"`, EVE behaves as if
+the node were never configured and does not produce a `startup-config`; the symptom is “the config
+disappeared after import”. The importer switches that flag on explicitly and then re-reads the
+file to verify, naming any node where it did not take.
+
 > Do not try the other route — pre-creating the runtime directory on the target and dropping a
 > `startup-config` into it. `cli.php:746` reads
 > `if (is_dir($n->getRunningPath())) !touch(…'.prepared')`, and in PHP `!touch()` **still calls
@@ -371,11 +397,21 @@ So **copying the `.unl` copies the configs too**, and `/opt/unetlab/tmp/` never 
 1. Creates a **new lab** on the target server (never overwrites anything; on a name clash it
    becomes `name-1` and says so)
 2. Writes the merged `.unl` and runs `chown www-data:www-data` + `chmod 644` **on that file only**
+   (**never chmod the `/opt/unetlab/labs` directory** — stripping its `x` bit makes EVE unable to
+   create any lab at all)
 3. Re-parses it through the EVE API and compares node counts; on mismatch the file is deleted
    again, so no half-broken lab is left behind
-4. Restores the text boxes (recorded for “target server + new lab path”, your existing labels
+4. **Writes the node configs and turns on the “use startup-config” switch**
+   - CE 6.x: posts the config to `/api/labs/{path}/configs/{id}` (EVE persists it itself) and then
+     sets `config` to `1` through the node edit endpoint
+   - Pro 7.x: that API is encrypted in this build and cannot be called (we measured `500` /
+     `60027` / `60061`), so the config rides entirely inside the `.unl` written in step 2 — this
+     step only flips the flag
+   - Finally the `.unl` is **read back and verified**: every node with a config must have both
+     `<config>` and `config="1"`
+5. Restores the text boxes (recorded for “target server + new lab path”, your existing labels
    are not overwritten)
-5. Opens the lab
+6. Opens the lab
 
 Node properties (template, image, RAM, NIC count, port wiring, canvas coordinates) are part of
 the `.unl`, so they are complete on arrival. **On start EVE dumps the embedded config into
@@ -390,6 +426,13 @@ the `.unl`, so they are complete on arrival. **On start EVE dumps the embedded c
   a plain browser, there is no window to attach a dialog to: the app says so and falls back to
   the default folder (the one used last time), so exporting still works.
 - **64 MB pack limit** (enforced from `Content-Length`); real labs are tens of KB to a few MB.
+- **Nodes must be running to capture an unsaved config**: the live read only happens while the
+  node is up; with everything stopped you get the version saved in the `.unl`.
+- **Capturing a config makes the device write once** (iOL's `wrconf` is effectively
+  `write memory`). This is what EVE's own “export config” button does: it only stores the current
+  `running-config` into the device NVRAM and changes nothing that is running.
+- **linux / windows / docker node configs are not captured**: they have no `config_script`, are
+  not config-file driven, and there is no equivalent to replay on import.
 - **Images do not travel with the pack**: no qemu / iol image binaries inside. If the target
   lacks an image the topology still imports completely, but those nodes cannot start — import
   the image first. The result message names the nodes that are affected.
@@ -576,7 +619,9 @@ web/                front end (xterm.js vendored locally, i18n.js for language/t
 | Clicking Export starts packing without a folder dialog | There is no GUI window (`--no-gui`, or the page is open in a plain browser). It falls back to the last used folder; the path on the result card is where the file went |
 | Import fails with “EVE could not parse the topology, rolled back: invalid node template …” | The pack uses a template that EVE on the target does not know (possible across major versions). The file just created was deleted, so no broken lab is left; switch those nodes to a template the target has |
 | Import succeeded but warns “Images are missing on this server, these nodes cannot start” | The topology is complete; the images just are not installed. Import them from the image library, then start the nodes |
-| Nodes start after import but their config is empty | Those nodes had no saved config to begin with (`config` is not `1` on the source node). Configs travel inside the `.unl`, so nothing on the source means nothing on the target |
+| Nodes start after import but their config is empty | Check whether the pack has a `configs/<id>-….cfg` for that node. If not, nothing could be captured on the source: the node was stopped and the `.unl` had no saved config either. **Export again with the nodes running**; linux / windows nodes never have a config to carry |
+| Import warns “these nodes have a config but the switch is off” | The config reached the `.unl` but the node's `config` flag could not be set to `1`, so EVE will not dump it into `startup-config`. Importing again retries it; if it still fails, set Startup-Config manually in the node settings |
+| Import warns “the config API is not available” | Expected on Pro 7.x: its config API is encrypted and cannot be called, so the config rides inside the `.unl` instead. Nothing is lost — imported nodes load their config on start on Pro too (measured) |
 | `% Invalid input at '^'` after typing | Old bug with NAWS before negotiation. Fixed |
 
 ---

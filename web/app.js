@@ -1950,10 +1950,20 @@ function importLab(file) {
     try { d = await r.json(); } catch (e) { throw new Error('HTTP ' + r.status); }
     if (!d.ok) throw new Error(d.error || ('HTTP ' + r.status));
     await loadLabs('');
-    toast(`已导入 ${d.name}：${d.nodes} 节点 · ${d.configs} 个配置 · ${d.textboxes} 个文本框`, 'ok');
+    // 配置数说「就位」而不是「几个」：写进 .unl 但开关没打开时，启动也不会加载，
+    // 这两种情况对用户是完全不同的结果
+    const cfg = d.configs_total
+      ? (d.configs === d.configs_total
+        ? ` · ${d.configs} 个配置已就位`
+        : ` · ${d.configs}/${d.configs_total} 个配置就位`)
+      : '';
+    toast(`已导入 ${d.name}：${d.nodes} 节点${cfg} · ${d.textboxes} 个文本框`, 'ok', 5000);
+    if (d.configs_total && d.configs === d.configs_total) {
+      setTimeout(() => toast('配置已就位，启动节点会自动加载', 'ok', 4000), 1500);
+    }
     if ((d.warnings || []).length) {
       console.warn('[导入警告]', d.warnings);
-      setTimeout(() => toast(d.warnings[0], 'warn'), 1400);
+      setTimeout(() => toast(d.warnings[0], 'warn', 6000), 3000);
     }
     return openLab(d.path);
   }).catch(fail);

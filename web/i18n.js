@@ -52,8 +52,12 @@
     '正在打包实验…': 'Packing the lab…',
     '先连接一台 EVE 服务器': 'Connect to an EVE server first',
     '正在导入 {}…': 'Importing {}…',
-    '已导入 {}：{} 节点 · {} 个配置 · {} 个文本框':
-      'Imported {}: {} nodes · {} configs · {} text boxes',
+    '已导入 {}：{} 节点 · {} 个配置已就位 · {} 个文本框':
+      'Imported {}: {} nodes · {} configs ready · {} text boxes',
+    '已导入 {}：{} 节点 · {}/{} 个配置就位 · {} 个文本框':
+      'Imported {}: {} nodes · {}/{} configs ready · {} text boxes',
+    '配置已就位，启动节点会自动加载':
+      'Configs are in place and load automatically when a node starts',
     '节点配置已随拓扑写入，启动节点即生效':
       'Node configs were written into the topology and take effect when the node starts',
     '目标已有同名实验，已改名为 {}': 'A lab with that name already exists; renamed to {}',
@@ -63,6 +67,14 @@
     '目标机缺镜像，这些节点起不来：{}（先用「镜像 → 导入」补上）':
       'Images are missing on this server, these nodes cannot start: {} (import the images first)',
     '节点 {} 的运行配置读不到：{}': 'Cannot read the running config of node {}: {}',
+    '有 {} 个节点的配置没落到实验文件里':
+      'Configs of {} node(s) did not make it into the lab file',
+    '这些节点有配置但没打开「使用配置」开关，启动不会生效：{}':
+      'These nodes have a config but the "use startup-config" switch is off, so it will not load on boot: {}',
+    '从设备读配置：{}': 'Reading the config from the device: {}',
+    '核对存档配置': 'Checking the saved configs',
+    '写入节点配置': 'Writing node configs',
+    '复核配置': 'Verifying configs',
     '抓包': 'Capture',
     '拓扑': 'Topology',
     '接口': 'Interface',
