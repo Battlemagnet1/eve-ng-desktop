@@ -138,7 +138,7 @@ Wireshark **不在安装时下载**（原先是 `DownloadTemporaryFile` 拉官�
 - 需要离线包时：把官方安装器重命名成 `installer/vendor/Wireshark-x64.exe` 放进去，
   `.iss` 里 `#if FileExists(...)` 会自动打开随包分支 —— 安装向导出现「安装 Wireshark」，
   静默安装，全程不联网。产出的安装包文件名会带 **`-full`**
-  （`EVE-Desktop-Setup-0.3.1-full.exe`），和普通包区分开。
+  （`EVE-Desktop-Setup-0.3.2-full.exe`），和普通包区分开。
   `vendor/` 已进 `.gitignore`，不会把 90MB 提交上去
 
 打包脚本会先确认用的是**项目 venv**（缺 `paramiko` 或 `pywebview` 直接报错，不会偷偷

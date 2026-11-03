@@ -139,7 +139,7 @@ option at all). Instead:
 - For an offline setup, rename the official installer to `installer/vendor/Wireshark-x64.exe`
   before building; `#if FileExists(...)` in the `.iss` switches on the bundled branch — the
   wizard offers “Install Wireshark” and installs it silently, no network. The resulting setup
-  is named with a **`-full`** suffix (`EVE-Desktop-Setup-0.3.1-full.exe`) so the two kinds
+  is named with a **`-full`** suffix (`EVE-Desktop-Setup-0.3.2-full.exe`) so the two kinds
   never overwrite each other. `vendor/` is gitignored so the 90 MB file never lands in the repo
 
 The build script first makes sure it is running the **project venv** (it fails loudly if
