@@ -52,7 +52,13 @@ function toast(msg, kind = '', ms = 2600) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.className = 'toast ' + kind; }, ms);
 }
-function fail(e) { toast(e.message || String(e), 'err'); console.error(e); }
+function fail(e) {
+  const msg = e.message || String(e);
+  // 带排查步骤的长提示（比如服务器授权/权限那类）要留够阅读时间，
+  // 一句「失败」默认 2.6 秒够，一百多字就不够了
+  toast(msg, 'err', msg.length > 40 ? 7000 : 2600);
+  console.error(e);
+}
 
 function isRunning(n) {
   // EVE 节点状态：0=停止 1=就绪 2=运行 3=运行且锁定
@@ -1143,9 +1149,16 @@ async function bulkAct(ids, action) {
     } catch (e) { errs.push(`${(S.lab.nodes[id] || {}).name || id}: ${e.message || e}`); }
   }
   if (action === 'del') S.selIds = [];
-  toast(`${verb} ${ok}/${ids.length} 个节点` + (errs.length ? `，${errs.length} 个失败` : ''),
-    errs.length ? 'err' : 'ok');
-  if (errs.length) console.warn(errs);
+  if (errs.length) {
+    // 只报「1 个失败」等于没说，把服务器给的原因直接摆出来。
+    // 提示可能较长（带排查方法），所以多留几秒。
+    toast(errs.length === 1 ? errs[0]
+      : `${verb} ${ok}/${ids.length} 个节点，${errs.length} 个失败（首个：${errs[0]}）`,
+      'err', 6000);
+    console.warn(errs);
+  } else {
+    toast(`${verb} ${ok}/${ids.length} 个节点`, 'ok');
+  }
   await openLab(S.labPath);
 }
 
@@ -2271,8 +2284,13 @@ function bind() {
       const clean = ((r.cleaned || {}).removed || []);
       let msg = `已启动 ${total - bad.length}/${total} 个节点`;
       if (clean.length) msg += `，清理残留网卡 ${clean.length} 个`;
-      toast(msg, bad.length ? 'err' : 'ok');
-      if (bad.length) console.warn('启动失败:', r.error);
+      if (bad.length) {
+        // 光报数量看不出为什么起不来，把服务器给的原因接在后面
+        toast(`${msg} —— ${r.error || (bad.length + ' 个失败')}`, 'err', 6000);
+        console.warn('启动失败:', r.error);
+      } else {
+        toast(msg, 'ok');
+      }
       await openLab(S.labPath);
     } catch (e) { fail(e); }
   };

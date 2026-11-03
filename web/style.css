@@ -390,6 +390,9 @@ body.dock-resizing .term iframe{pointer-events:none}
   background:var(--toast-bg);border:1px solid var(--line2);color:var(--txt);
   padding:9px 18px;border-radius:8px;font-size:12.5px;opacity:0;pointer-events:none;
   transition:all .2s;z-index:80;max-width:70vw;
+  line-height:1.55;          /* 长提示会折成两三行，行距松一点才读得下去 */
+  word-break:break-word;     /* 带路径和长参数的提示别撑出屏幕 */
+  text-align:left;
 }
 .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.err{border-color:var(--toast-err-bd);background:var(--toast-err-bg)}

@@ -488,6 +488,10 @@
       'Session was taken over by another client (EVE allows one session per account): {}',
     '当前是「仅服务」模式：请在浏览器里打开，或直接启动图形版':
       'Running in server-only mode: open it in a browser, or start the GUI build',
+    '服务器授权校验没通过 —— 它连不上 www.eve-ng.net（这台机器多半没配 DNS，或者断了外网）。在服务器上执行 resolvectl status 看一眼，网配通后约 1 分钟会自动恢复':
+      'Server licence check failed — it cannot reach www.eve-ng.net (this machine probably has no DNS or no internet). Run resolvectl status on the server; it recovers about a minute after DNS works',
+    '服务器拒绝了提权 —— 常见原因是 /opt/unetlab/data/Logs 里的日志被 root 占着、www-data 追加不进去。上服务器执行 chown -R www-data:www-data /opt/unetlab/data/Logs 再试':
+      'The server refused to elevate privileges — usually /opt/unetlab/data/Logs is owned by root so www-data cannot append. Run chown -R www-data:www-data /opt/unetlab/data/Logs on the server and retry',
 
     /* 后端日志（设置页底部那几条最常见的） */
     '已连接 {}（EVE {} · 仅 API）': 'Connected to {} (EVE {} · API only)',

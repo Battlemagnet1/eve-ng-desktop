@@ -17,8 +17,25 @@ import urllib.parse
 import urllib.request
 
 
+# EVE 的状态码大多是内部编号（98、2、60069…），原样甩给用户等于没说 ——
+# 「Eve Unlicensed (98)」这种只在服务器上翻源码才看得懂。
+# 这里只给「需要用户跑去服务器上动手」的几个配上人话，其余保持原样（不制造噪音）。
+CODE_HINTS = {
+    98: "服务器授权校验没通过 —— 它连不上 www.eve-ng.net（这台机器多半没配 DNS，或者断了外网）。"
+        "在服务器上执行 resolvectl status 看一眼，网配通后约 1 分钟会自动恢复",
+    2: "服务器拒绝了提权 —— 常见原因是 /opt/unetlab/data/Logs 里的日志被 root 占着、"
+       "www-data 追加不进去。上服务器执行 "
+       "chown -R www-data:www-data /opt/unetlab/data/Logs 再试",
+}
+
+
 class EveError(Exception):
     def __init__(self, message, code=None, payload=None):
+        # 原话（多半是英文）留在 raw_message 里给日志和排查用，界面上给中文人话
+        self.raw_message = message
+        hint = CODE_HINTS.get(code) if isinstance(code, int) else None
+        if hint:
+            message = hint
         super().__init__(message)
         self.message = message
         self.code = code
