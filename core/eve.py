@@ -399,6 +399,39 @@ class EveSession:
             body.setdefault("template", cur.get("template"))
         return self.put("/api/labs/%s/nodes/%s" % (_q(path), nid), body)
 
+    def _iface_map(self, path, nid):
+        """返回 (接口编号→对象, 名字→编号, 排好序的编号列表)。
+
+        接口名有两套：EVE 内部名（e0、e0/1）和厂商真名（Gi0/0、Ethernet0/1）。
+        界面上显示/传的是内部名，而 CE 的 ethernet 里只有厂商名，直接按名字查
+        会查不到——曾经因此「接线看着成功、实际一根线都没接」（CE 6.2 实测）。
+        这里给每个接口多挂几个别名，内部名按**顺序**换算，两套都能命中。
+        接线和断线共用同一套换算，否则「接得上、删不掉」。
+        """
+        cur = self.node_interfaces(path, nid) or {}
+        eth = cur.get("ethernet") or {}
+        order = sorted(eth.keys(), key=lambda k: int(k) if str(k).isdigit() else 1 << 30)
+        by_name = {}
+        for idx, iid in enumerate(order):
+            nm = (eth.get(iid) or {}).get("name")
+            if nm:
+                by_name[str(nm)] = str(iid)
+            by_name["e%d" % idx] = str(iid)        # e0、e1…
+            by_name["e0/%d" % idx] = str(iid)      # e0/0、e0/1…
+        return eth, by_name, order
+
+    def iface_attached(self, path, nid, name):
+        """接口现在接在哪个网络上（未接返回 0）。断线后用它复核，别信状态码。"""
+        eth, by_name, _ = self._iface_map(path, nid)
+        iid = by_name.get(str(name))
+        if iid is None:
+            return None            # 名字对不上：调用方自己报错
+        it = eth.get(iid) or {}
+        try:
+            return int(it.get("network_id") or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def set_interfaces(self, path, nid, ifaces):
         """改接口接线。
 
@@ -410,20 +443,7 @@ class EveSession:
           [{"name": "e0/0", "network_id": 3}, ...]   或   {"e0/0": 3, ...}
         只提交需要改的接口，未提交的保持原样。
         """
-        cur = self.node_interfaces(path, nid) or {}
-        eth = cur.get("ethernet") or {}
-        # 接口名有两套：EVE 内部名（e0、e0/1）和厂商真名（Gi0/0、Ethernet0/1）。
-        # 界面上显示/传的是内部名，而 CE 的 ethernet 里只有厂商名，直接按名字查
-        # 会查不到——曾经因此「接线看着成功、实际一根线都没接」（CE 6.2 实测）。
-        # 这里给每个接口多挂几个别名，内部名按**顺序**换算，两套都能命中。
-        order = sorted(eth.keys(), key=lambda k: int(k) if str(k).isdigit() else 1 << 30)
-        by_name = {}
-        for idx, iid in enumerate(order):
-            nm = (eth.get(iid) or {}).get("name")
-            if nm:
-                by_name[str(nm)] = str(iid)
-            by_name["e%d" % idx] = str(iid)        # e0、e1…
-            by_name["e0/%d" % idx] = str(iid)      # e0/0、e0/1…
+        eth, by_name, order = self._iface_map(path, nid)
 
         if isinstance(ifaces, dict):
             items = list(ifaces.items())
@@ -439,8 +459,9 @@ class EveSession:
             body[iid] = "" if net in (None, "", 0, "0") else str(net)
         if not body:
             # 一个都没匹配上就别当成功返回，否则上层会以为接好了
-            want = [str((x or {}).get("name") or (x or {}).get("id"))
-                    if isinstance(x, dict) else str(x) for x in items]
+            # items 已经是 (名字, 网络) 元组，别再当成 dict 取 —— 之前直接
+            # str(元组) 拼进提示里，报错长成「接口 ('e99', None) 不存在」
+            want = [str(k) for k, _ in items]
             have = [str((eth.get(i) or {}).get("name") or i) for i in order]
             raise EveError("接口 %s 不存在（这个节点有：%s）"
                            % ("、".join(want), "、".join(have)))

@@ -22,6 +22,8 @@ const S = {
   capTimer: null,
   lastPcap: '',
   selIds: [],          // 选中的节点 id（支持多选，顺序即点选顺序）
+  selLink: null,       // 选中的连接线（与节点选择互斥）
+  linkHits: [],        // 画好的每条线的几何信息，点画布时用它算「点在哪根线上」
   linking: null,       // Shift 拖线接线的临时状态
   ifaces: {},          // {节点id: [{name, network_id, id}]}，给链路标注接口名用
   showP2P: false,      // 是否把「只挂 2 个接口的直连桥」也画成图标（默认隐藏）
@@ -366,6 +368,7 @@ async function openLab(path) {
   S.labPath = path;
   S.sel = null;
   S.selIds = [];
+  S.selLink = null;        // 换实验/重载后旧实验的线选中状态不能留着
   S.ifaces = {};           // 旧实验的接口信息不能留在新画布上
   S.texts = [];            // 旧实验的文本框同理（异步拉回来后再画）
   S.tbxSel = [];           // 切换实验时清掉文本框选择
@@ -779,6 +782,31 @@ function deleteTextBox(el) {
 }
 
 /* 连线单独一层：拖动节点时只重画线，不重算缩放（否则视角会跳） */
+/* 一段可见的线。带 meta 的线可以被点中 / 右键删除：
+   几何信息同时记进 S.linkHits —— 命中判定不走 SVG 的 pointer-events
+   （.links 是 none，给子元素单独开命中区既不可靠，又会挡住节点的拖拽）。*/
+function linkMeta(A, B, la, lb, netId) {
+  const L = S.lab || {};
+  const nodeName = id => ((L.nodes || {})[id] || {}).name || ('#' + id);
+  const netName = id => ((L.networks || {})[id] || {}).name || ('网络 ' + id);
+  const ends = [
+    A.kind === 'node' ? { type: 'node', id: String(A.id), iface: la || '' }
+                      : { type: 'network', id: String(A.id) },
+    B.kind === 'node' ? { type: 'node', id: String(B.id), iface: lb || '' }
+                      : { type: 'network', id: String(B.id) },
+  ];
+  const one = (p, iface) => (p.kind === 'node'
+    ? nodeName(p.id) + (iface ? ' · ' + iface : '')
+    : netName(p.id));
+  return {
+    key: ends.map(e => e.type + e.id + '|' + (e.iface || '')).join('#')
+         + '@' + (netId == null ? '' : netId),
+    net: netId == null ? '' : netId,
+    ends,
+    text: one(A, la) + ' ↔ ' + one(B, lb),
+  };
+}
+
 function drawLinks() {
   const L = S.lab;
   const linksEl = $('#links');
@@ -814,13 +842,22 @@ function drawLinks() {
   const p2p = S.showP2P ? new Set() : p2pNetIds();
   const placed = new Map();          // 节点 → 已占用标签数，同一节点旁的多个标签依次错开
 
-  const stroke = (A, B, ox, oy) => {
+  S.linkHits = [];                 // 选中/删除连接线时按这里的几何算命中
+  const stroke = (A, B, meta) => {
     const line = document.createElementNS(svgNS, 'line');
-    line.setAttribute('x1', A.x + ox); line.setAttribute('y1', A.y + oy);
-    line.setAttribute('x2', B.x + ox); line.setAttribute('y2', B.y + oy);
+    line.setAttribute('class', 'lnbody');
+    line.setAttribute('x1', A.x); line.setAttribute('y1', A.y);
+    line.setAttribute('x2', B.x); line.setAttribute('y2', B.y);
     line.setAttribute('stroke', '#33404e');
     line.setAttribute('stroke-width', '2');
+    if (meta) {
+      line.dataset.key = meta.key;
+      const tip = document.createElementNS(svgNS, 'title');
+      tip.textContent = meta.text + '（点一下选中，右键可删除）';
+      line.appendChild(tip);
+    }
     linksEl.appendChild(line);
+    S.linkHits.push({ x1: A.x, y1: A.y, x2: B.x, y2: B.y, el: line, meta });
   };
 
   /* 末端是「被隐藏的直连桥」的边先攒起来：一条边 = 一个接口，两个节点配好对再画成直连 */
@@ -845,10 +882,10 @@ function drawLinks() {
     /* 直连边（两端都是节点）：不在这里画，攒到下面按节点对分组并排错开，
        否则两台路由器之间的多根网线会全部叠成一根 */
     if (A.kind === 'node' && B.kind === 'node') {
-      direct.push({ A, B, la: l.source_label || '', lb: l.destination_label || '' });
+      direct.push({ A, B, la: l.source_label || '', lb: l.destination_label || '',
+                    net: l.network_id });
       return;
     }
-    stroke(A, B, 0, 0);
 
     /* EVE 在拓扑里直接给了接口名：source_label / destination_label。
        两个节点共用一个隐藏网桥时，EVE 给的是 node→node 的直连边、两端都带名字，
@@ -857,6 +894,7 @@ function drawLinks() {
       || (A.kind === 'node' && B.kind === 'network' ? ifacesOnNet(A.id, B.id).join(' ') : '');
     const lb = l.destination_label
       || (B.kind === 'node' && A.kind === 'network' ? ifacesOnNet(B.id, A.id).join(' ') : '');
+    stroke(A, B, linkMeta(A, B, la, lb, l.network_id));
     addIfaceLabel(linksEl, svgNS, A, B, la, placed);
     addIfaceLabel(linksEl, svgNS, B, A, lb, placed);
   });
@@ -871,7 +909,7 @@ function drawLinks() {
     const n = Math.max(byNode[ids[0]].length, byNode[ids[1]].length);
     for (let i = 0; i < n; i++) {
       pairs.push({
-        A, B,
+        A, B, net: nid,
         la: byNode[ids[0]][Math.min(i, byNode[ids[0]].length - 1)] || '',
         lb: byNode[ids[1]][Math.min(i, byNode[ids[1]].length - 1)] || '',
       });
@@ -890,7 +928,8 @@ function drawLinks() {
     const dx = p.B.x - p.A.x, dy = p.B.y - p.A.y;
     const len = Math.hypot(dx, dy) || 1;
     const ox = -dy / len * off, oy = dx / len * off;
-    stroke({ x: p.A.x + ox, y: p.A.y + oy }, { x: p.B.x + ox, y: p.B.y + oy }, 0, 0);
+    stroke({ x: p.A.x + ox, y: p.A.y + oy }, { x: p.B.x + ox, y: p.B.y + oy },
+           linkMeta(p.A, p.B, p.la, p.lb, p.net));
     // 标签锚点用「没偏移」的线算；第 i 根线（最上）的标签排最上，两端顺序一致
     const s = n > 1 ? n - 1 - i : 0;
     addIfaceLabel(linksEl, svgNS, p.A, p.B, p.la, placed, s);
@@ -1070,6 +1109,7 @@ function paintSel() {
 
 async function selectNode(id, mode) {
   // mode: '' 单选 / 'add' 加选（Ctrl）/ 'toggle' 切换
+  clearLinkSel();                 // 选节点就取消线的选中（两者互斥）
   const cur = S.selIds || [];
   if (mode === 'toggle') {
     S.selIds = cur.includes(id) ? cur.filter(x => x !== id) : cur.concat([id]);
@@ -1099,6 +1139,7 @@ function renderMultiInspector() {
   if (!ids.length) { renderInspector(null); return; }
   const names = ids.map(id => (S.lab.nodes[id] || {}).name || ('#' + id));
   const run = ids.filter(id => isRunning(S.lab.nodes[id] || {})).length;
+  setInspTitle('已选节点');
   const box = $('#inspBody');
   box.onchange = null;
   box.innerHTML = `
@@ -1162,8 +1203,15 @@ async function bulkAct(ids, action) {
   await openLab(S.labPath);
 }
 
+/* 右侧面板的标题跟着选中对象走：「节点」/「网络」/「连接线」 */
+function setInspTitle(t) {
+  const el = $('#inspTitle');
+  if (el) el.textContent = t;
+}
+
 function renderInspector(d) {
   $$('.net').forEach(x => x.classList.remove('sel'));
+  setInspTitle('节点');
   const box = $('#inspBody');
   if (!d) { box.innerHTML = '<div class="empty">选中一个节点</div>'; box.onchange = null; return; }
   const n = d.node || {};
@@ -1466,6 +1514,108 @@ async function deleteNetById(id, name) {
       { method: 'DELETE' });
     afterWrite(r);
     toast('已删除网络', 'ok');
+    await openLab(S.labPath);
+  } catch (e) { fail(e); }
+}
+
+/* --------------------------------------------- 连接线：点选 / 右键删除 */
+/* 点到线段的距离（世界坐标）。连线的命中判定全靠它 —— 比给 SVG 开
+   pointer-events 命中区稳，也不会挡住节点拖拽和框选。*/
+function distToSeg(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const l2 = dx * dx + dy * dy;
+  let t = l2 ? ((px - x1) * dx + (py - y1) * dy) / l2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+/* 屏幕坐标 → 落在哪根线上。容差按缩放折算，缩到 25% 时手上也还点得中。*/
+function hitLink(clientX, clientY) {
+  const stage = $('#stage');
+  if (!stage || !(S.linkHits || []).length) return null;
+  const box = stage.getBoundingClientRect();
+  const z = S.z || 1;
+  const x = (clientX - box.left - S.tx) / z;
+  const y = (clientY - box.top - S.ty) / z;
+  const tol = 10 / Math.max(z, 0.2);
+  let best = null, bestD = Infinity;
+  (S.linkHits || []).forEach(h => {
+    if (!h.meta) return;
+    const d = distToSeg(x, y, h.x1, h.y1, h.x2, h.y2);
+    if (d <= tol && d < bestD) { bestD = d; best = h; }
+  });
+  return best;
+}
+
+function paintLinkSel() {
+  const key = (S.selLink && S.selLink.key) || '';
+  (S.linkHits || []).forEach(h => {
+    if (h.el) h.el.classList.toggle('sel', !!key && !!h.meta && h.meta.key === key);
+  });
+}
+
+function selectLink(h) {
+  if (!h || !h.meta) return;
+  S.selLink = h.meta;
+  S.selIds = []; S.sel = null;
+  if ((S.tbxSel || []).length) { S.tbxSel = []; paintTbxSel(); }
+  $$('.net').forEach(x => x.classList.remove('sel'));
+  paintSel();
+  paintLinkSel();
+  renderLinkInspector();
+}
+
+function clearLinkSel() {
+  if (!S.selLink) return;
+  S.selLink = null;
+  paintLinkSel();
+}
+
+/* 选中一条线时右侧检查器换成「这条线」，不显示节点属性 */
+function renderLinkInspector() {
+  const m = S.selLink;
+  const box = $('#inspBody');
+  if (!box) return;
+  if (!m) { renderInspector(null); return; }
+  setInspTitle('连接线');
+  const L = S.lab || {};
+  const nameOf = e => (e.type === 'node'
+    ? (((L.nodes || {})[e.id] || {}).name || ('#' + e.id)) + (e.iface ? ' · ' + e.iface : '')
+    : (((L.networks || {})[e.id] || {}).name || ('网络 ' + e.id)));
+  const net = m.net === '' ? null : ((L.networks || {})[m.net] || null);
+  box.onchange = null;
+  box.innerHTML = `
+    <div class="kv"><span class="k">A 端</span><span class="v">${esc(nameOf(m.ends[0]))}</span></div>
+    <div class="kv"><span class="k">B 端</span><span class="v">${esc(nameOf(m.ends[1]))}</span></div>
+    ${net ? `<div class="kv"><span class="k">经网络</span><span class="v">${esc(net.name)} · ${esc(net.type)} · ${esc(net.count)} 口</span></div>` : ''}
+    ${m.net === '' ? '' : `<div class="kv"><span class="k">网络 id</span><span class="v">${esc(m.net)}</span></div>`}
+    <div class="insp-actions">
+      <button class="btn sm danger" data-lnk="del">删除这条线</button>
+    </div>
+    <div class="row"><button class="btn sm ghost" data-lnk="clear">取消选择</button></div>`;
+  box.onclick = ev => {
+    const b = ev.target.closest('[data-lnk]');
+    if (!b) return;
+    if (b.dataset.lnk === 'clear') { clearLinkSel(); renderInspector(null); return; }
+    deleteLink(m);
+  };
+}
+
+/* 删线 = 把这条线两端的网卡从网络上摘下来（网络本身留着，别的线不受影响）*/
+async function deleteLink(m) {
+  if (!m) return;
+  const socks = (m.ends || []).filter(e => e.type === 'node' && e.iface);
+  const net = m.net === '' ? null : m.net;
+  if (!socks.length && !net) { toast('这条线没有可断开的网卡', 'err'); return; }
+  if (!confirm(`删除这条连接线？\n${m.text}\n\n只拔线，不删网络图标。`)) return;
+  const body = { path: S.labPath, net_id: net == null ? null : Number(net) };
+  if (socks[0]) body.a = { id: socks[0].id, iface: socks[0].iface };
+  if (socks[1]) body.b = { id: socks[1].id, iface: socks[1].iface };
+  try {
+    const r = await api('/api/lab/unlink', { method: 'POST', body: guarded(body) });
+    afterWrite(r);
+    clearLinkSel();
+    toast('已删除连接线', 'ok');
     await openLab(S.labPath);
   } catch (e) { fail(e); }
 }
@@ -2307,6 +2457,7 @@ function bind() {
   const SVGNS = 'http://www.w3.org/2000/svg';
   let pan = null, ndrag = null, mq = null, suppressClick = 0, tbxDrag = null;
   let netDrag = null;              // 拖云/网络图标（EVE 里 network 也有 left/top）
+  let hoverLn = null;              // 鼠标底下那根线（只用来做悬停高亮 + 手型光标）
   const ndEl = id => document.querySelector(`.nd[data-id="${id}"]`);
 
   stage.addEventListener('mousedown', e => {
@@ -2334,6 +2485,24 @@ function bind() {
            cur: additive ? new Set(S.selIds || []) : new Set(),
            curTbx: additive ? new Set(S.tbxSel || []) : new Set() };
     if (!additive) { S.selIds = []; paintSel(); S.tbxSel = []; paintTbxSel(); }
+  });
+
+  // 悬停到线上给手型 + 高亮：否则没人知道这线能点。
+  // .links 是 pointer-events:none，光标不会自己变，得自己判。
+  stage.addEventListener('mousemove', e => {
+    if (pan || ndrag || mq || netDrag || tbxDrag || S.linking) return;
+    const over = e.target.closest('.nd') || e.target.closest('.net') || e.target.closest('.tbx');
+    const hit = over ? null : hitLink(e.clientX, e.clientY);
+    const el = hit ? hit.el : null;
+    stage.classList.toggle('lnhover', !!el);
+    if (el === hoverLn) return;
+    if (hoverLn) hoverLn.classList.remove('hover');
+    hoverLn = el;
+    if (el) el.classList.add('hover');
+  });
+  stage.addEventListener('mouseleave', () => {
+    stage.classList.remove('lnhover');
+    if (hoverLn) { hoverLn.classList.remove('hover'); hoverLn = null; }
   });
 
   $('#nodes').addEventListener('mousedown', e => {
@@ -2772,14 +2941,15 @@ function bind() {
   });
   window.addEventListener('blur', () => { spaceDown = false; stage.classList.remove('panmode'); });
 
-  // Delete / Backspace 删掉选中的文本框；正在输入框里打字时不拦
+  // Delete / Backspace：删选中的文本框；选中连接线时删线。正在输入框里打字时不拦
   window.addEventListener('keydown', e => {
     if (e.key !== 'Delete' && e.key !== 'Backspace') return;
-    if (!(S.tbxSel || []).length) return;
+    if (!(S.tbxSel || []).length && !S.selLink) return;
     const a = document.activeElement;
     if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return;
     if (document.querySelector('.modal-mask')) return;
     e.preventDefault();
+    if (S.selLink) { deleteLink(S.selLink); return; }
     deleteSelectedTexts();
   });
 
@@ -2787,6 +2957,10 @@ function bind() {
     if (Date.now() - suppressClick < 350) return;
     if (e.target.closest('.nd') || e.target.closest('.net')
         || e.target.closest('.tbx') || e.target.closest('.marquee')) return;
+    // 点在连接线上就选中它（节点/网络/文本框优先级更高，走不到这里）
+    const hit = hitLink(e.clientX, e.clientY);
+    if (hit) { selectLink(hit); return; }
+    if (S.selLink) { clearLinkSel(); renderInspector(null); }
     if (S.selIds && S.selIds.length) { S.selIds = []; paintSel(); renderInspector(null); }
     $$('.net').forEach(x => x.classList.remove('sel'));
     if ((S.tbxSel || []).length) { S.tbxSel = []; paintTbxSel(); }
@@ -2838,6 +3012,18 @@ function bind() {
               : ['删除文本框', () => deleteTextBox(tbxEl)],
       ]);
       return;
+    }
+    if (!netEl && !nd) {
+      const ln = hitLink(e.clientX, e.clientY);
+      if (ln) {
+        e.preventDefault();
+        showCtx(e.clientX, e.clientY, [
+          ['选中这条线', () => selectLink(ln)],
+          null,
+          ['删除这条连接线', () => deleteLink(ln.meta)],
+        ]);
+        return;
+      }
     }
     if (!netEl && !nd) {
       e.preventDefault();
@@ -2942,6 +3128,7 @@ function bind() {
     $$('.nd').forEach(x => x.classList.remove('sel'));
     S.selIds = [];
     const net = (S.lab.networks || {})[nid] || {};
+    setInspTitle('网络');
     const box = $('#inspBody');
     box.onchange = null;
     box.innerHTML = `

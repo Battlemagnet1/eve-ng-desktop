@@ -469,6 +469,71 @@ class App:
         return {"ok": True, "net": int(net_id), "created": created,
                 "umtime": eve.lab_umtime(path)}
 
+    def unlink(self, path, a=None, b=None, net_id=None, umtime=None):
+        """断开一条连接线：只拔线，不删网络图标。
+
+        a / b 是要拔的端点 `{id, iface}`，可以只给一个 —— 线的一端是网络/云
+        时（界面上是「节点────云」），另一端没有网卡可拔，拔掉节点这端就够了。
+
+        为什么不直接删网络：一条 bridge 可能挂着 3 个以上接口，删网络会把
+        别的线一起弄断。EVE 的连线本来就是「接口的 network_id 指向某个网络」，
+        所以断线 = 把那几个接口的 network_id 清空。桥最后变成 0 个接口且不可见
+        时 EVE 自己会在保存时丢掉（__lab.php 里 count==0 && visibility==0 跳过），
+        这边再顺手清一次，避免留下看不见的垃圾。
+        """
+        eve = self.require()
+        self._guard(path, umtime)
+
+        ends = []
+        for x in (a, b):
+            if not x:
+                continue
+            nid = x.get("id")
+            iface = (x.get("iface") or "").strip()
+            if nid in (None, ""):
+                continue
+            if not iface:
+                raise EveError("要断开的这端没给网卡名（节点 %s）" % nid)
+            ends.append({"id": nid, "iface": iface.split()[0]})
+        if not ends:
+            raise EveError("没有指定要断开的网卡")
+
+        for e in ends:
+            eve.set_interfaces(path, e["id"], [{"name": e["iface"], "network_id": None}])
+
+        # 复核：EVE 对不认识的接口名是静默忽略的，HTTP 照样 200。
+        # 不读回来看一眼，就会出现「点了删除、线还在」。
+        still = []
+        for e in ends:
+            left = eve.iface_attached(path, e["id"], e["iface"])
+            if left is None:
+                raise EveError("节点 %s 上没有网卡 %s（EVE 没认这个名字）"
+                               % (e["id"], e["iface"]))
+            if left:
+                still.append("%s:%s（还挂在网络 %s）" % (e["id"], e["iface"], left))
+        if still:
+            raise EveError("断开没生效：%s" % "、".join(still))
+
+        cleaned = False
+        if net_id not in (None, "", 0, "0"):
+            try:
+                net = (eve.lab_networks(path) or {}).get(str(net_id)) or {}
+                try:
+                    cnt = int(net.get("count") or 0)
+                    vis = int(net.get("visibility") or 0)
+                except (TypeError, ValueError):
+                    cnt = vis = 0
+                if cnt == 0 and vis == 0 and str(net.get("type")) == "bridge":
+                    eve.delete_network(path, net_id)
+                    cleaned = True
+            except EveError:
+                pass        # 清不掉也只是留个空桥，不影响这次断线
+
+        self.log("断开连接 %s（网络 %s%s）"
+                 % ("、".join("%s:%s" % (e["id"], e["iface"]) for e in ends),
+                    net_id, "，清理空桥" if cleaned else ""))
+        return {"ok": True, "cleaned": cleaned, "umtime": eve.lab_umtime(path)}
+
     # ---------- 抓包 ----------
     def _iface_of(self, path, nid, iface=None, ifid=None):
         """网卡名 → EVE 的接口编号（e0/0=0、e0/1=16…），也是 tap 名最后一截。"""
@@ -844,6 +909,10 @@ class Handler(BaseHTTPRequestHandler):
                 _req(body, "path", "实验路径"), body.get("a"), body.get("b"),
                 body.get("net_id"), body.get("name"),
                 body.get("left"), body.get("top"), body.get("umtime"))})
+        if path == "/api/lab/unlink":
+            return self._json({"ok": True, **a.unlink(
+                _req(body, "path", "实验路径"), body.get("a"), body.get("b"),
+                body.get("net_id"), body.get("umtime"))})
         # ---------- 抓包 ----------
         if path == "/api/capture/start":
             return self._json({"ok": True, **a.capture_start(
