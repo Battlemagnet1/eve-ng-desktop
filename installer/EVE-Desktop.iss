@@ -13,7 +13,7 @@
 ;      本机已装则这条不显示。应用里抓包面板也有同一个入口。
 
 #define MyAppName "EVE Desktop"
-#define MyAppVersion "0.3.2"
+#define MyAppVersion "0.3.3"
 #define MyAppExeName "EVE-Desktop.exe"
 
 ; 离线 Wireshark：放进来就随包（体积 +~90MB），不放就没有这个选项。
