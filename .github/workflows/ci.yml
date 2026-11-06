@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: 语法与冒烟 (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # pywebview 在 Linux 上要装 GTK/WebKit 系统库，CI 只验证无 GUI 的后端，
+      # 所以只装 paramiko。webview 在代码里都是延迟导入，不影响 import 检查。
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install "paramiko>=3.4"
+
+      - name: Python 语法检查
+        run: python -m compileall -q app.py core
+
+      - name: 核心模块可导入
+        run: |
+          python -c "import core.server, core.eve, core.term, core.capture, core.labpack, core.notes; print('import ok')"
+
+      - name: 前端语法检查
+        run: |
+          node --check web/app.js
+          node --check web/i18n.js
+
+      - name: 版本号一致性
+        run: python .github/check_version.py
+
+      - name: 本地服务冒烟
+        run: |
+          python app.py --no-gui --port 18765 > /tmp/svc.log 2>&1 &
+          ok=0
+          for i in $(seq 1 40); do
+            if curl -sf --noproxy '*' --max-time 2 http://127.0.0.1:18765/api/state > /tmp/state.json; then ok=1; break; fi
+            sleep 0.5
+          done
+          echo "--- 服务日志 ---"; cat /tmp/svc.log || true
+          if [ "$ok" != "1" ]; then echo "服务没起来"; exit 1; fi
+          echo "--- /api/state ---"; cat /tmp/state.json
+          python - <<'PY'
+          import json
+          d = json.load(open("/tmp/state.json"))
+          assert d.get("ok") is True, "state.ok 不为 true"
+          assert "profiles" in d, "state 缺少 profiles"
+          print("smoke ok")
+          PY
